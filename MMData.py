@@ -22,7 +22,9 @@ from scipy.signal import butter, filtfilt
 DOWNSCALED_VIDEO_PREFIX = 'downscaled_720p_v3_'
 OFFSET_RANGE_MS = 30000 
 VIDEO_SIZE = (620, 440) 
-LOG_FILE = 'sync_log.csv'
+LOG_DIR = os.path.expanduser("~/Documents/DogAgilityLogs")
+os.makedirs(LOG_DIR)
+LOG_FILE = os.path.join(LOG_DIR, 'sync_log.csv')
 # ---------------------
 
 def get_resource_path(relative_path):
