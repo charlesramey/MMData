@@ -13,6 +13,8 @@ import sys
 import subprocess
 import os
 import csv
+import platform  # Added for computer name
+import time      # Added for duration tracking
 from datetime import datetime
 from scipy.signal import butter, filtfilt
 
@@ -20,6 +22,7 @@ from scipy.signal import butter, filtfilt
 DOWNSCALED_VIDEO_PREFIX = 'downscaled_720p_v3_'
 OFFSET_RANGE_MS = 30000 
 VIDEO_SIZE = (620, 440) 
+LOG_FILE = 'sync_log.csv'
 # ---------------------
 
 def get_resource_path(relative_path):
@@ -122,6 +125,22 @@ class MatplotlibCanvas(FigureCanvas):
         self.ax.set_title('No Data Loaded', fontsize=10)
         self.draw()
 
+    def clear_markers(self):
+        # Move lines to a neutral position and hide them
+        # We use [np.nan] to avoid the shape mismatch error
+        self.start_line.set_xdata([np.nan])
+        self.stop_line.set_xdata([np.nan])
+        
+        self.start_line.set_alpha(0)
+        self.start_label.set_alpha(0)
+        self.stop_line.set_alpha(0)
+        self.stop_label.set_alpha(0)
+        
+        # Point markers are standard plots, so [] works fine here
+        self.point_marker.set_data([], [])
+        
+        self.draw()
+
     def update_data(self, df):
         self.df = df
         accel_mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
@@ -146,14 +165,21 @@ class MatplotlibCanvas(FigureCanvas):
         self.ax.tick_params(axis='both', which='major', labelsize=7)
         self.ax.grid(True, linestyle='--', alpha=0.6)
         
+        # Re-initialize the marker objects on the new plot
         self.point_marker, = self.ax.plot([], [], 'o', color='red', markersize=6, label='Sync Point')
-        self.start_line = self.ax.axvline(x=0, color='green', linestyle='--', alpha=0)
+        
+        # Initialize vertical lines with NaN so they don't crash on draw
+        self.start_line = self.ax.axvline(x=np.nan, color='green', linestyle='--', alpha=0)
         self.start_label = self.ax.text(0, 0, '', color='green', fontweight='bold', verticalalignment='bottom', fontsize=8)
-        self.stop_line = self.ax.axvline(x=0, color='red', linestyle='--', alpha=0)
+        self.start_label.set_alpha(0)
+        
+        self.stop_line = self.ax.axvline(x=np.nan, color='red', linestyle='--', alpha=0)
         self.stop_label = self.ax.text(0, 0, '', color='red', fontweight='bold', verticalalignment='bottom', fontsize=8)
+        self.stop_label.set_alpha(0)
         
         self.ax.legend(fontsize=7, loc='upper left')
         plt.tight_layout(pad=0.5)
+        self.draw()
 
     def set_start_marker(self, time_s):
         self.start_line.set_xdata([time_s])
@@ -199,7 +225,6 @@ class SyncPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Video & Data Synchronizer")
-        # Identifiers for persistent settings
         self.settings = QSettings("GeorgiaTech", "DogAgilitySyncTool")
 
         self.offset_ms = 0
@@ -219,6 +244,10 @@ class SyncPlayer(QMainWindow):
         self.obstacle_start_time = None 
         self.obstacle_stop_time = None 
         
+        # New: Tracking metrics
+        self.repetition_start_time = 0.0
+        self.computer_name = platform.node()
+        
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
@@ -237,9 +266,15 @@ class SyncPlayer(QMainWindow):
         self.choose_btn.clicked.connect(self.choose_directory)
         self.next_btn = QPushButton("Next File >>")
         self.next_btn.clicked.connect(self.next_file)
+        
+        self.quit_btn = QPushButton("Quit Here")
+        self.quit_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+        self.quit_btn.clicked.connect(self.quit_application)
+        
         header.addWidget(self.file_label)
         header.addWidget(self.choose_btn)
         header.addWidget(self.next_btn)
+        header.addWidget(self.quit_btn)
         self.main_layout.addLayout(header)
 
         self.splitter = QSplitter(Qt.Vertical)
@@ -317,6 +352,9 @@ class SyncPlayer(QMainWindow):
         if self.settings.value("windowGeometry"):
             self.restoreGeometry(self.settings.value("windowGeometry"))
 
+    def quit_application(self):
+        self.close()
+
     def closeEvent(self, event):
         self.save_ui_settings()
         if self.cap: self.cap.release()
@@ -329,36 +367,62 @@ class SyncPlayer(QMainWindow):
         for w in widgets: w.setEnabled(enabled)
 
     def choose_directory(self):
-        # Using native directory picker - can sometimes lag on macOS due to permissions
         p = QFileDialog.getExistingDirectory(self, "Select Root Directory", os.path.expanduser("~"))
         if p:
             self.root_dir = p
-            # Filter for task subdirectories
-            self.file_dirs = [
+            all_dirs = [
                 os.path.join(p, d) for d in sorted(os.listdir(p)) 
                 if os.path.isdir(os.path.join(p, d)) and not d.startswith('.')
             ]
-            if self.file_dirs:
+            
+            if not all_dirs:
+                QMessageBox.warning(self, "No Directories", "No task subdirectories found.")
+                return
+
+            self.file_dirs = all_dirs
+            
+            resume_index = 0
+            if os.path.exists(LOG_FILE):
+                try:
+                    with open(LOG_FILE, 'r') as f:
+                        reader = list(csv.DictReader(f))
+                        if reader:
+                            last_logged_dir = reader[-1]['Directory']
+                            for i, full_path in enumerate(self.file_dirs):
+                                if os.path.basename(full_path) == last_logged_dir:
+                                    resume_index = i + 1
+                                    break
+                except Exception as e:
+                    print(f"Could not read log for resume: {e}")
+
+            if resume_index < len(self.file_dirs):
+                self.current_dir_index = resume_index
+                self.load_file_pair(resume_index)
+            else:
+                QMessageBox.information(self, "Done", "All directories in this folder have already been logged!")
                 self.current_dir_index = 0
                 self.load_file_pair(0)
-            else:
-                QMessageBox.warning(self, "No Directories", "No task subdirectories found in selected root.")
 
     def load_file_pair(self, index):
         self.save_ui_settings()
         current_dir = self.file_dirs[index]
         self.file_label.setText(f"File: {os.path.basename(current_dir)}")
         
+        # Start tracking time for this repetition
+        self.repetition_start_time = time.time()
+        
         video_path, csv_path = find_video_csv_pair(current_dir)
         df, error = load_data(csv_path)
         
-        # FIX: Explicit check for None to avoid Ambiguous DataFrame ValueError
         if df is None:
             QMessageBox.critical(self, "Data Error", f"Failed to load CSV: {error}")
             return
-
+        
         self.df = df
         self.current_video_path, self.current_csv_path = video_path, csv_path
+        
+        # FIX: Clear markers BEFORE updating with new data
+        self.plot_canvas.clear_markers() 
         self.plot_canvas.update_data(self.df)
         
         out_v = os.path.join(current_dir, DOWNSCALED_VIDEO_PREFIX + os.path.basename(video_path))
@@ -375,9 +439,9 @@ class SyncPlayer(QMainWindow):
         self.video_duration = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) * 1000 / self.fps)
         self.frame_delay = int(1000/self.fps) if self.fps > 0 else 33
         
-        # Reset state for new repetition
         self.video_time_ms = 0
         self.offset_ms = 0
+        self.offset_slider.setValue(OFFSET_RANGE_MS) 
         self.obstacle_start_time = None
         self.obstacle_stop_time = None
         self.notes_input.clear()
@@ -385,7 +449,18 @@ class SyncPlayer(QMainWindow):
         self.missed_btn.setChecked(False)
         self.pos_slider.setRange(0, self.video_duration)
         self._set_controls_enabled(True)
-        self.update_frame()
+
+        # --- FIX 2: REFRESH VIDEO IMMEDIATELY ---
+        self.is_playing = False # Ensure we start paused
+        self.play_btn.setText("PLAY")
+        
+        # Grab and display the first frame manually
+        ret, frame = self.cap.read()
+        if ret:
+            self.display_frame(frame)
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Reset to start after peek
+        
+        self.update_frame() # Triggers markers and slider sync
 
     def update_frame(self):
         if self.is_playing and self.cap:
@@ -431,7 +506,6 @@ class SyncPlayer(QMainWindow):
 
     def update_offset_value(self, val):
         self.offset_ms = val - OFFSET_RANGE_MS
-        # Re-draw markers with new offset if they've been set
         if self.obstacle_start_time is not None:
             self.plot_canvas.set_start_marker((self.obstacle_start_time + self.offset_ms) / 1000.0)
         if self.obstacle_stop_time is not None:
@@ -444,10 +518,18 @@ class SyncPlayer(QMainWindow):
         if ret: self.display_frame(frame)
 
     def save_result(self):
-        log_file = 'sync_log.csv'
-        fieldnames = ['Timestamp', 'Directory', 'Video_File', 'CSV_File', 'Offset_ms', 'Start_ms', 'Stop_ms', 'Incomplete', 'Missed_Contact', 'Notes']
+        # Calculate duration spent on this specific file
+        duration = round(time.time() - self.repetition_start_time, 2)
+        
+        fieldnames = [
+            'Timestamp', 'Computer_Name', 'Directory', 'Video_File', 
+            'CSV_File', 'Offset_ms', 'Start_ms', 'Stop_ms', 
+            'Incomplete', 'Missed_Contact', 'Duration_s', 'Notes'
+        ]
+        
         log_data = {
             'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Computer_Name': self.computer_name,
             'Directory': os.path.basename(self.file_dirs[self.current_dir_index]),
             'Video_File': os.path.basename(self.current_video_path),
             'CSV_File': os.path.basename(self.current_csv_path),
@@ -456,11 +538,13 @@ class SyncPlayer(QMainWindow):
             'Stop_ms': self.obstacle_stop_time if self.obstacle_stop_time is not None else 'N/A',
             'Incomplete': self.incomplete_btn.isChecked(),
             'Missed_Contact': self.missed_btn.isChecked(),
+            'Duration_s': duration,
             'Notes': self.notes_input.text()
         }
-        exists = os.path.exists(log_file)
+        
+        exists = os.path.exists(LOG_FILE)
         try:
-            with open(log_file, 'a', newline='') as f:
+            with open(LOG_FILE, 'a', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 if not exists: writer.writeheader()
                 writer.writerow(log_data)
