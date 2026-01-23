@@ -7,14 +7,14 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter
 )
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, QFont
 from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
 import sys
 import subprocess
 import os
 import csv
-import platform  # Added for computer name
-import time      # Added for duration tracking
+import platform  
+import time      
 from datetime import datetime
 from scipy.signal import butter, filtfilt
 
@@ -109,36 +109,31 @@ class MatplotlibCanvas(FigureCanvas):
         self.setParent(parent)
         self.setMinimumHeight(100)
         self.df = None
-        
-        self.point_marker, = self.ax.plot([], [], 'o', color='red', markersize=6, label='Current Point')
-        self.start_line = self.ax.axvline(x=0, color='green', linestyle='--', alpha=0)
-        self.start_label = self.ax.text(0, 0, '', color='green', fontweight='bold', verticalalignment='bottom', fontsize=8)
-        self.stop_line = self.ax.axvline(x=0, color='red', linestyle='--', alpha=0)
-        self.stop_label = self.ax.text(0, 0, '', color='red', fontweight='bold', verticalalignment='bottom', fontsize=8)
-        
-        self.ax.legend(fontsize=7, loc='upper left')
+        self.reset_marker_objects()
         plt.tight_layout(pad=0.25)
 
-    def clear_plot(self):
-        self.df = None
-        self.ax.clear()
-        self.ax.set_title('No Data Loaded', fontsize=10)
-        self.draw()
+    def reset_marker_objects(self):
+        """Re-initializes marker objects on the current axis."""
+        self.point_marker, = self.ax.plot([], [], 'o', color='red', markersize=6, label='Sync Point', zorder=5)
+        self.start_line = self.ax.axvline(x=np.nan, color='green', linestyle='--', alpha=0, zorder=4)
+        self.stop_line = self.ax.axvline(x=np.nan, color='red', linestyle='--', alpha=0, zorder=4)
+        self.start_label = self.ax.text(0, 0, '', color='green', fontweight='bold', alpha=0, verticalalignment='bottom', fontsize=8)
+        self.stop_label = self.ax.text(0, 0, '', color='red', fontweight='bold', alpha=0, verticalalignment='bottom', fontsize=8)
 
     def clear_markers(self):
-        # Move lines to a neutral position and hide them
-        # We use [np.nan] to avoid the shape mismatch error
-        self.start_line.set_xdata([np.nan])
-        self.stop_line.set_xdata([np.nan])
-        
-        self.start_line.set_alpha(0)
-        self.start_label.set_alpha(0)
-        self.stop_line.set_alpha(0)
-        self.stop_label.set_alpha(0)
-        
-        # Point markers are standard plots, so [] works fine here
-        self.point_marker.set_data([], [])
-        
+        """Hides and resets markers to prevent persistence between files."""
+        if hasattr(self, 'start_line'):
+            self.start_line.set_xdata([np.nan])
+            self.start_line.set_alpha(0)
+        if hasattr(self, 'stop_line'):
+            self.stop_line.set_xdata([np.nan])
+            self.stop_line.set_alpha(0)
+        if hasattr(self, 'start_label'):
+            self.start_label.set_alpha(0)
+        if hasattr(self, 'stop_label'):
+            self.stop_label.set_alpha(0)
+        if hasattr(self, 'point_marker'):
+            self.point_marker.set_data([], [])
         self.draw()
 
     def update_data(self, df):
@@ -156,26 +151,34 @@ class MatplotlibCanvas(FigureCanvas):
         self.ax.plot(self.df['Relative_Time_s'], self.df['Amag_Filtered'], 
                      label='Accel Filtered (5Hz)', color='#003366', linewidth=1.5)
         
+        # Scale and plot Gyroscope data if available
         if {'Gx', 'Gy', 'Gz'}.issubset(df.columns):
             gyro_mag = np.sqrt(df['Gx']**2 + df['Gy']**2 + df['Gz']**2)
             scale_factor = accel_mag.max() / gyro_mag.max() if gyro_mag.max() > 0 else 1.0
             self.df['Gmag_scaled'] = gyro_mag * scale_factor
             self.ax.plot(self.df['Relative_Time_s'], self.df['Gmag_scaled'], label=f"Gyro (scaled x{scale_factor:.1f})", color='green', linewidth=1.0, alpha=0.6)
 
+        # Process and Plot Barometer (Pressure) data
+        if 'Pressure' in df.columns:
+            # Low pass filter to remove taps/spikes (2Hz cutoff)
+            p_filtered = apply_lowpass(df['Pressure'].values, cutoff=2.0, fs=fs)
+            
+            # Scale pressure trend to fit in the same vertical space as Accel magnitude
+            p_min, p_max = p_filtered.min(), p_filtered.max()
+            if p_max > p_min:
+                p_scaled = (p_filtered - p_min) / (p_max - p_min) * accel_mag.max()
+            else:
+                p_scaled = np.zeros_like(p_filtered)
+            
+            self.df['Pressure_Scaled'] = p_scaled
+            self.ax.plot(self.df['Relative_Time_s'], self.df['Pressure_Scaled'], 
+                         label='Pressure (filtered/scaled)', color='orange', linewidth=1.2)
+
         self.ax.tick_params(axis='both', which='major', labelsize=7)
         self.ax.grid(True, linestyle='--', alpha=0.6)
         
-        # Re-initialize the marker objects on the new plot
-        self.point_marker, = self.ax.plot([], [], 'o', color='red', markersize=6, label='Sync Point')
-        
-        # Initialize vertical lines with NaN so they don't crash on draw
-        self.start_line = self.ax.axvline(x=np.nan, color='green', linestyle='--', alpha=0)
-        self.start_label = self.ax.text(0, 0, '', color='green', fontweight='bold', verticalalignment='bottom', fontsize=8)
-        self.start_label.set_alpha(0)
-        
-        self.stop_line = self.ax.axvline(x=np.nan, color='red', linestyle='--', alpha=0)
-        self.stop_label = self.ax.text(0, 0, '', color='red', fontweight='bold', verticalalignment='bottom', fontsize=8)
-        self.stop_label.set_alpha(0)
+        # Re-initialize markers on the fresh axis
+        self.reset_marker_objects()
         
         self.ax.legend(fontsize=7, loc='upper left')
         plt.tight_layout(pad=0.5)
@@ -244,7 +247,6 @@ class SyncPlayer(QMainWindow):
         self.obstacle_start_time = None 
         self.obstacle_stop_time = None 
         
-        # New: Tracking metrics
         self.repetition_start_time = 0.0
         self.computer_name = platform.node()
         
@@ -294,6 +296,13 @@ class SyncPlayer(QMainWindow):
         self.controls_container = QWidget()
         ctrl_layout = QVBoxLayout(self.controls_container)
         
+        # Shortcut Instructions
+        self.shortcut_label = QLabel("Keyboard: [Space] Play/Pause | [S] Mark Start | [D] Mark Stop | [Enter] Save")
+        self.shortcut_label.setFont(QFont("Arial", 9, QFont.Bold))
+        self.shortcut_label.setStyleSheet("color: #555555; padding-bottom: 5px;")
+        self.shortcut_label.setAlignment(Qt.AlignCenter)
+        ctrl_layout.addWidget(self.shortcut_label)
+
         play_row = QHBoxLayout()
         self.play_btn = QPushButton("PLAY")
         self.play_btn.clicked.connect(self.toggle_playback)
@@ -328,11 +337,18 @@ class SyncPlayer(QMainWindow):
         self.start_btn.clicked.connect(self.mark_obstacle_start)
         self.stop_btn = QPushButton("Mark Stop")
         self.stop_btn.clicked.connect(self.mark_obstacle_stop)
+        
+        self.clear_btn = QPushButton("Clear Marks")
+        self.clear_btn.clicked.connect(self.handle_manual_clear)
+        self.clear_btn.setStyleSheet("background-color: #757575; color: white;")
+        
         self.save_btn = QPushButton("SAVE")
         self.save_btn.clicked.connect(self.save_result)
         self.save_btn.setStyleSheet("background-color: #00bcd4; color: white;")
+        
         mark_row.addWidget(self.start_btn)
         mark_row.addWidget(self.stop_btn)
+        mark_row.addWidget(self.clear_btn)
         mark_row.addWidget(self.save_btn)
         ctrl_layout.addLayout(mark_row)
 
@@ -341,6 +357,24 @@ class SyncPlayer(QMainWindow):
         self.splitter.setStyleSheet("QSplitter::handle { background-color: #cccccc; height: 8px; }")
         
         self._set_controls_enabled(False)
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts."""
+        if self.current_dir_index == -1:
+            super().keyPressEvent(event)
+            return
+
+        key = event.key()
+        if key == Qt.Key_Space and not self.notes_input.hasFocus():
+            self.toggle_playback()
+        elif key == Qt.Key_S and not self.notes_input.hasFocus():
+            self.mark_obstacle_start()
+        elif key == Qt.Key_D and not self.notes_input.hasFocus():
+            self.mark_obstacle_stop()
+        elif key in (Qt.Key_Return, Qt.Key_Enter):
+            self.save_result()
+        else:
+            super().keyPressEvent(event)
 
     def save_ui_settings(self):
         self.settings.setValue("splitterSizes", self.splitter.saveState())
@@ -362,7 +396,7 @@ class SyncPlayer(QMainWindow):
 
     def _set_controls_enabled(self, enabled):
         widgets = [self.play_btn, self.offset_slider, self.pos_slider, 
-                   self.save_btn, self.start_btn, self.stop_btn, 
+                   self.save_btn, self.start_btn, self.stop_btn, self.clear_btn,
                    self.notes_input, self.incomplete_btn, self.missed_btn]
         for w in widgets: w.setEnabled(enabled)
 
@@ -380,7 +414,6 @@ class SyncPlayer(QMainWindow):
                 return
 
             self.file_dirs = all_dirs
-            
             resume_index = 0
             if os.path.exists(LOG_FILE):
                 try:
@@ -408,21 +441,23 @@ class SyncPlayer(QMainWindow):
         current_dir = self.file_dirs[index]
         self.file_label.setText(f"File: {os.path.basename(current_dir)}")
         
-        # Start tracking time for this repetition
         self.repetition_start_time = time.time()
-        
         video_path, csv_path = find_video_csv_pair(current_dir)
         df, error = load_data(csv_path)
         
         if df is None:
             QMessageBox.critical(self, "Data Error", f"Failed to load CSV: {error}")
             return
+
+        # Reset sync variables and clear markers
+        self.video_time_ms = 0
+        self.offset_ms = 0
+        self.obstacle_start_time = None
+        self.obstacle_stop_time = None
+        self.plot_canvas.clear_markers()
         
         self.df = df
         self.current_video_path, self.current_csv_path = video_path, csv_path
-        
-        # FIX: Clear markers BEFORE updating with new data
-        self.plot_canvas.clear_markers() 
         self.plot_canvas.update_data(self.df)
         
         out_v = os.path.join(current_dir, DOWNSCALED_VIDEO_PREFIX + os.path.basename(video_path))
@@ -439,28 +474,21 @@ class SyncPlayer(QMainWindow):
         self.video_duration = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) * 1000 / self.fps)
         self.frame_delay = int(1000/self.fps) if self.fps > 0 else 33
         
-        self.video_time_ms = 0
-        self.offset_ms = 0
         self.offset_slider.setValue(OFFSET_RANGE_MS) 
-        self.obstacle_start_time = None
-        self.obstacle_stop_time = None
         self.notes_input.clear()
         self.incomplete_btn.setChecked(False)
         self.missed_btn.setChecked(False)
         self.pos_slider.setRange(0, self.video_duration)
         self._set_controls_enabled(True)
 
-        # --- FIX 2: REFRESH VIDEO IMMEDIATELY ---
-        self.is_playing = False # Ensure we start paused
+        # Immediate video refresh
+        self.is_playing = False 
         self.play_btn.setText("PLAY")
-        
-        # Grab and display the first frame manually
         ret, frame = self.cap.read()
         if ret:
             self.display_frame(frame)
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Reset to start after peek
-        
-        self.update_frame() # Triggers markers and slider sync
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0) 
+        self.update_frame()
 
     def update_frame(self):
         if self.is_playing and self.cap:
@@ -493,6 +521,11 @@ class SyncPlayer(QMainWindow):
         data_time_s = (self.obstacle_stop_time + self.offset_ms) / 1000.0
         self.plot_canvas.set_stop_marker(data_time_s)
 
+    def handle_manual_clear(self):
+        self.obstacle_start_time = None
+        self.obstacle_stop_time = None
+        self.plot_canvas.clear_markers()
+
     def next_file(self):
         if self.current_dir_index < len(self.file_dirs) - 1:
             self.current_dir_index += 1
@@ -518,15 +551,12 @@ class SyncPlayer(QMainWindow):
         if ret: self.display_frame(frame)
 
     def save_result(self):
-        # Calculate duration spent on this specific file
         duration = round(time.time() - self.repetition_start_time, 2)
-        
         fieldnames = [
             'Timestamp', 'Computer_Name', 'Directory', 'Video_File', 
             'CSV_File', 'Offset_ms', 'Start_ms', 'Stop_ms', 
             'Incomplete', 'Missed_Contact', 'Duration_s', 'Notes'
         ]
-        
         log_data = {
             'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'Computer_Name': self.computer_name,
@@ -541,7 +571,6 @@ class SyncPlayer(QMainWindow):
             'Duration_s': duration,
             'Notes': self.notes_input.text()
         }
-        
         exists = os.path.exists(LOG_FILE)
         try:
             with open(LOG_FILE, 'a', newline='') as f:
@@ -549,7 +578,7 @@ class SyncPlayer(QMainWindow):
                 if not exists: writer.writeheader()
                 writer.writerow(log_data)
             QMessageBox.information(self, "Saved", f"Results for {log_data['Directory']} logged successfully.")
-            self.next_btn.setEnabled(True)
+            self.next_file() 
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Could not log result: {e}")
 

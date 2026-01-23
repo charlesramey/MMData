@@ -1,2 +1,3 @@
 Timestamp,Computer_Name,Directory,Video_File,CSV_File,Offset_ms,Start_ms,Stop_ms,Incomplete,Missed_Contact,Duration_s,Notes
 2026-01-22 17:09:01,MacBook-Air-110.local,Rumchata_Aframe_1,rep1_aframe_rumchata_full_720p.mp4,Rumchata_aframe_1_cleaned.csv,1878,2926,4136,False,False,60.06,
+2026-01-23 09:08:23,MacBook-Air-110.local,Arya_Aframe_1,rep1_aframe_arya_full_720p.mp4,Arya_aframe_1_cleaned.csv,964,3799,5392,False,False,78.86,
