@@ -22,8 +22,15 @@ from scipy.signal import butter, filtfilt
 DOWNSCALED_VIDEO_PREFIX = 'downscaled_720p_v3_'
 OFFSET_RANGE_MS = 30000 
 VIDEO_SIZE = (620, 440) 
-LOG_DIR = os.path.expanduser("~/Documents/DogAgilityLogs")
-os.makedirs(LOG_DIR)
+
+if platform.system() == 'Darwin':  # macOS
+    LOG_DIR = os.path.expanduser("~/Documents/DogAgilityLogs")
+else: # Windows/Other
+    LOG_DIR = os.getcwd()
+
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
 LOG_FILE = os.path.join(LOG_DIR, 'sync_log.csv')
 # ---------------------
 
@@ -35,11 +42,9 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def apply_lowpass(data, cutoff, fs, order=4):
-    """Applies a Zero-phase Butterworth Low-Pass Filter."""
     nyquist = 0.5 * fs
     normal_cutoff = cutoff / nyquist
     if normal_cutoff >= 1: normal_cutoff = 0.99
-    
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
     y = filtfilt(b, a, data)
     return y
@@ -58,34 +63,11 @@ def find_video_csv_pair(directory):
                 break
     return video_file, csv_file
 
-def run_ffmpeg_downscale(input_file, video_output_file):
-    if not os.path.exists(input_file):
-        return None, "Original video file not found."
-    original_filename = os.path.basename(input_file)
-    if '720' in original_filename.lower():
-        return input_file, None
-
-    if not os.path.exists(video_output_file):
-        ffmpeg_exe = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg' 
-        ffmpeg_path = get_resource_path(ffmpeg_exe)
-        video_command = [
-            ffmpeg_path, '-i', input_file, '-vf', 'scale=1280:-2', 
-            '-c:v', 'libx264', '-crf', '23', '-preset', 'fast', '-an', '-y', video_output_file
-        ]
-        try:
-            subprocess.run(video_command, check=True, capture_output=True, text=True)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            video_output_file = input_file 
-            
-    return video_output_file, None
-
 def load_data(csv_path):
     try:
         df = pd.read_csv(csv_path)
-        if df.empty:
-            return None, "CSV file is empty."
-    except Exception as e:
-        return None, f"Error loading CSV: {e}"
+        if df.empty: return None, "CSV file is empty."
+    except Exception as e: return None, f"Error loading CSV: {e}"
 
     if 'Timestamp' not in df.columns or 'Ax' not in df.columns:
         return None, "Error: 'Timestamp' or 'Ax' column not found in CSV."
@@ -99,490 +81,249 @@ def find_closest_data_index(df, target_time_ms):
     idx = np.searchsorted(time_series, target_time_ms, side="left")
     if idx == 0: return 0
     if idx == len(df): return len(df) - 1
-    if abs(time_series[idx-1] - target_time_ms) < abs(time_series[idx] - target_time_ms):
-        return idx - 1
-    else:
-        return idx
+    return idx if abs(time_series[idx-1] - target_time_ms) > abs(time_series[idx] - target_time_ms) else idx - 1
 
 class MatplotlibCanvas(FigureCanvas):
     def __init__(self, parent=None):
         fig, self.ax = plt.subplots(figsize=(6, 4), dpi=100)
         super().__init__(fig)
         self.setParent(parent)
-        self.setMinimumHeight(100)
-        self.df = None
         self.reset_marker_objects()
         plt.tight_layout(pad=0.25)
 
     def reset_marker_objects(self):
-        """Re-initializes marker objects on the current axis."""
-        self.point_marker, = self.ax.plot([], [], 'o', color='red', markersize=6, label='Sync Point', zorder=5)
-        self.start_line = self.ax.axvline(x=np.nan, color='green', linestyle='--', alpha=0, zorder=4)
-        self.stop_line = self.ax.axvline(x=np.nan, color='red', linestyle='--', alpha=0, zorder=4)
-        self.start_label = self.ax.text(0, 0, '', color='green', fontweight='bold', alpha=0, verticalalignment='bottom', fontsize=8)
-        self.stop_label = self.ax.text(0, 0, '', color='red', fontweight='bold', alpha=0, verticalalignment='bottom', fontsize=8)
+        self.point_marker, = self.ax.plot([], [], 'o', color='red', markersize=6, zorder=10)
+        self.m = {
+            'stride_start': (self.ax.axvline(x=np.nan, color='blue', ls='--', alpha=0), self.ax.text(0,0,'',color='blue',fontsize=8,fontweight='bold')),
+            'obs_start': (self.ax.axvline(x=np.nan, color='green', ls=':', alpha=0), self.ax.text(0,0,'',color='green',fontsize=8,fontweight='bold')),
+            'obs_stop': (self.ax.axvline(x=np.nan, color='red', ls=':', alpha=0), self.ax.text(0,0,'',color='red',fontsize=8,fontweight='bold')),
+            'stride_stop': (self.ax.axvline(x=np.nan, color='purple', ls='--', alpha=0), self.ax.text(0,0,'',color='purple',fontsize=8,fontweight='bold'))
+        }
 
     def clear_markers(self):
-        """Hides and resets markers to prevent persistence between files."""
-        if hasattr(self, 'start_line'):
-            self.start_line.set_xdata([np.nan])
-            self.start_line.set_alpha(0)
-        if hasattr(self, 'stop_line'):
-            self.stop_line.set_xdata([np.nan])
-            self.stop_line.set_alpha(0)
-        if hasattr(self, 'start_label'):
-            self.start_label.set_alpha(0)
-        if hasattr(self, 'stop_label'):
-            self.stop_label.set_alpha(0)
-        if hasattr(self, 'point_marker'):
-            self.point_marker.set_data([], [])
+        for line, label in self.m.values():
+            line.set_xdata([np.nan]); line.set_alpha(0); label.set_alpha(0)
+        self.point_marker.set_data([], [])
         self.draw()
 
     def update_data(self, df):
         self.df = df
-        accel_mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
-        self.df['Amag'] = accel_mag
-
-        time_diffs = np.diff(df['Relative_Time_s'])
-        fs = 1.0 / np.mean(time_diffs) if len(time_diffs) > 0 else 100.0
-        self.df['Amag_Filtered'] = apply_lowpass(accel_mag, cutoff=5.0, fs=fs)
-
+        mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
+        diffs = np.diff(df['Relative_Time_s'])
+        fs = 1.0 / np.mean(diffs) if len(diffs) > 0 else 100.0
+        self.df['Amag_F'] = apply_lowpass(mag, 5.0, fs)
         self.ax.clear()
-        self.ax.plot(self.df['Relative_Time_s'], self.df['Amag'], 
-                     label='Accel Raw', color='lightblue', linewidth=0.8, alpha=0.6)
-        self.ax.plot(self.df['Relative_Time_s'], self.df['Amag_Filtered'], 
-                     label='Accel Filtered (5Hz)', color='#003366', linewidth=1.5)
-        
-        # Scale and plot Gyroscope data if available
-        if {'Gx', 'Gy', 'Gz'}.issubset(df.columns):
-            gyro_mag = np.sqrt(df['Gx']**2 + df['Gy']**2 + df['Gz']**2)
-            scale_factor = accel_mag.max() / gyro_mag.max() if gyro_mag.max() > 0 else 1.0
-            self.df['Gmag_scaled'] = gyro_mag * scale_factor
-            self.ax.plot(self.df['Relative_Time_s'], self.df['Gmag_scaled'], label=f"Gyro (scaled x{scale_factor:.1f})", color='green', linewidth=1.0, alpha=0.6)
-
-        # Process and Plot Barometer (Pressure) data
+        self.ax.plot(df['Relative_Time_s'], mag, color='lightblue', lw=0.8, alpha=0.4)
+        self.ax.plot(df['Relative_Time_s'], self.df['Amag_F'], color='#003366', lw=1.5, label='Accel (5Hz)')
         if 'Pressure' in df.columns:
-            # Low pass filter to remove taps/spikes (2Hz cutoff)
-            p_filtered = apply_lowpass(df['Pressure'].values, cutoff=2.0, fs=fs)
-            
-            # Scale pressure trend to fit in the same vertical space as Accel magnitude
-            p_min, p_max = p_filtered.min(), p_filtered.max()
-            if p_max > p_min:
-                p_scaled = (p_filtered - p_min) / (p_max - p_min) * accel_mag.max()
-            else:
-                p_scaled = np.zeros_like(p_filtered)
-            
-            self.df['Pressure_Scaled'] = p_scaled
-            self.ax.plot(self.df['Relative_Time_s'], self.df['Pressure_Scaled'], 
-                         label='Pressure (filtered/scaled)', color='orange', linewidth=1.2)
-
-        self.ax.tick_params(axis='both', which='major', labelsize=7)
-        self.ax.grid(True, linestyle='--', alpha=0.6)
-        
-        # Re-initialize markers on the fresh axis
+            p = apply_lowpass(df['Pressure'].values, 2.0, fs)
+            p_s = (p - p.min()) / (p.max() - p.min()) * mag.max() if p.max() > p.min() else p
+            self.ax.plot(df['Relative_Time_s'], p_s, color='orange', lw=1.2, alpha=0.7, label='Pressure')
+        self.ax.grid(True, ls='--', alpha=0.6)
         self.reset_marker_objects()
-        
         self.ax.legend(fontsize=7, loc='upper left')
-        plt.tight_layout(pad=0.5)
         self.draw()
 
-    def set_start_marker(self, time_s):
-        self.start_line.set_xdata([time_s])
-        self.start_line.set_alpha(1.0)
-        y_max = self.ax.get_ylim()[1]
-        self.start_label.set_position((time_s, y_max))
-        self.start_label.set_text('START')
-        self.start_label.set_alpha(1.0)
+    def set_marker(self, key, time_ms, offset_ms):
+        line, label = self.m[key]
+        time_s = (time_ms + offset_ms) / 1000.0
+        line.set_xdata([time_s]); line.set_alpha(1.0)
+        label.set_position((time_s, self.ax.get_ylim()[1])); label.set_text(key.upper().replace('_', ' ')); label.set_alpha(1.0)
         self.draw()
 
-    def set_stop_marker(self, time_s):
-        self.stop_line.set_xdata([time_s])
-        self.stop_line.set_alpha(1.0)
-        y_max = self.ax.get_ylim()[1]
-        self.stop_label.set_position((time_s, y_max))
-        self.stop_label.set_text('STOP')
-        self.stop_label.set_alpha(1.0)
+    def update_cursor(self, t_ms, offset_ms):
+        if self.df is None: return
+        idx = find_closest_data_index(self.df, t_ms + offset_ms)
+        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F']])
         self.draw()
-
-    def update_marker(self, target_data_time_ms, sync_offset_ms, is_playing):
-        if self.df is None or self.df.empty:
-            return
-            
-        min_dt, max_dt = self.df['Relative_Time_ms'].min(), self.df['Relative_Time_ms'].max()
-        if min_dt <= target_data_time_ms <= max_dt:
-            idx = find_closest_data_index(self.df, target_data_time_ms)
-            self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_Filtered']])
-        else:
-            self.point_marker.set_data([], [])
-
-        status = "PLAYING" if is_playing else "PAUSED"
-        self.ax.set_title(f'Status: {status} | Sync Offset: {sync_offset_ms/1000.0:.3f} s', fontsize=10)
-        self.draw()
-
-class VideoFrameWidget(QLabel):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(QSize(320, 240))
-        self.setStyleSheet("background-color: black;") 
 
 class SyncPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Video & Data Synchronizer")
-        self.settings = QSettings("GeorgiaTech", "DogAgilitySyncTool")
-
-        self.offset_ms = 0
-        self.video_time_ms = 0
-        self.is_playing = False
-        self.df = None
+        self.setWindowTitle("Dog Agility Sync Tool")
         self.cap = None
-        self.video_duration = 0
-        self.fps = 0
-        self.frame_delay = 33
+        self.is_playing = False
+        self.video_time_ms = 0
+        self.offset_ms = 0
+        self.idx = -1
+        self.dirs = []
+        self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
+        
+        self.central = QWidget()
+        self.setCentralWidget(self.central)
+        layout = QVBoxLayout(self.central)
 
-        self.root_dir = None
-        self.file_dirs = []
-        self.current_dir_index = -1
-        self.current_video_path = None
-        self.current_csv_path = None
-        self.obstacle_start_time = None 
-        self.obstacle_stop_time = None 
-        
-        self.repetition_start_time = 0.0
-        self.computer_name = platform.node()
-        
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.main_layout = QVBoxLayout(self.central_widget)
-        
-        self._setup_ui()
-        self.load_ui_settings()
-        
-        self.playback_timer = QTimer(self)
-        self.playback_timer.timeout.connect(self.update_frame)
-        self.playback_timer.start(self.frame_delay)
-        
-    def _setup_ui(self):
+        # Header with Next Button restored
         header = QHBoxLayout()
-        self.file_label = QLabel("Current File: None")
-        self.choose_btn = QPushButton("Choose Directory")
-        self.choose_btn.clicked.connect(self.choose_directory)
+        self.file_lbl = QLabel("File: None")
+        dir_btn = QPushButton("Choose Directory")
+        dir_btn.clicked.connect(self.choose_directory)
         self.next_btn = QPushButton("Next File >>")
         self.next_btn.clicked.connect(self.next_file)
-        
-        self.quit_btn = QPushButton("Quit Here")
-        self.quit_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
-        self.quit_btn.clicked.connect(self.quit_application)
-        
-        header.addWidget(self.file_label)
-        header.addWidget(self.choose_btn)
+        header.addWidget(self.file_lbl)
+        header.addWidget(dir_btn)
         header.addWidget(self.next_btn)
-        header.addWidget(self.quit_btn)
-        self.main_layout.addLayout(header)
+        layout.addLayout(header)
 
+        # Splitter (Video & Plot)
         self.splitter = QSplitter(Qt.Vertical)
-        
-        self.video_frame_widget = VideoFrameWidget(self)
-        self.splitter.addWidget(self.video_frame_widget)
+        self.video_lbl = QLabel()
+        self.video_lbl.setStyleSheet("background-color: black;")
+        self.video_lbl.setAlignment(Qt.AlignCenter)
+        self.video_lbl.setMinimumSize(400, 300)
+        self.plot = MatplotlibCanvas(self)
+        self.splitter.addWidget(self.video_lbl)
+        self.splitter.addWidget(self.plot)
+        layout.addWidget(self.splitter)
 
-        self.plot_container = QWidget()
-        plot_layout = QVBoxLayout(self.plot_container)
-        plot_layout.setContentsMargins(0,0,0,0)
-        self.plot_canvas = MatplotlibCanvas(self)
-        self.plot_toolbar = NavigationToolbar(self.plot_canvas, self)
-        plot_layout.addWidget(self.plot_toolbar)
-        plot_layout.addWidget(self.plot_canvas)
-        self.splitter.addWidget(self.plot_container)
+        # Time Scroll
+        scroll_layout = QHBoxLayout()
+        self.time_slider = QSlider(Qt.Horizontal)
+        self.time_slider.sliderMoved.connect(self.scrub_video)
+        scroll_layout.addWidget(QLabel("Time:"))
+        scroll_layout.addWidget(self.time_slider)
+        layout.addLayout(scroll_layout)
 
-        self.controls_container = QWidget()
-        ctrl_layout = QVBoxLayout(self.controls_container)
-        
-        # Shortcut Instructions
-        self.shortcut_label = QLabel("Keyboard: [Space] Play/Pause | [S] Mark Start | [D] Mark Stop | [Enter] Save")
-        self.shortcut_label.setFont(QFont("Arial", 9, QFont.Bold))
-        self.shortcut_label.setStyleSheet("color: #555555; padding-bottom: 5px;")
-        self.shortcut_label.setAlignment(Qt.AlignCenter)
-        ctrl_layout.addWidget(self.shortcut_label)
-
-        play_row = QHBoxLayout()
+        # Consolidated Controls
+        ctrls = QVBoxLayout()
+        row_play = QHBoxLayout()
         self.play_btn = QPushButton("PLAY")
-        self.play_btn.clicked.connect(self.toggle_playback)
+        self.play_btn.clicked.connect(self.toggle_play)
         self.offset_slider = QSlider(Qt.Horizontal)
-        self.offset_slider.setRange(0, OFFSET_RANGE_MS * 2)
-        self.offset_slider.setValue(OFFSET_RANGE_MS)
-        self.offset_slider.valueChanged.connect(self.update_offset_value)
-        self.pos_slider = QSlider(Qt.Horizontal)
-        self.pos_slider.sliderMoved.connect(self.update_scrub_position)
-        play_row.addWidget(self.play_btn)
-        play_row.addWidget(QLabel("Offset:"))
-        play_row.addWidget(self.offset_slider)
-        play_row.addWidget(QLabel("Time:"))
-        play_row.addWidget(self.pos_slider)
-        ctrl_layout.addLayout(play_row)
+        self.offset_slider.setRange(0, 60000)
+        self.offset_slider.setValue(30000)
+        self.offset_slider.valueChanged.connect(self.update_offset)
+        row_play.addWidget(self.play_btn)
+        row_play.addWidget(QLabel("Sync Offset:"))
+        row_play.addWidget(self.offset_slider)
+        ctrls.addLayout(row_play)
 
-        anno_row = QHBoxLayout()
-        self.notes_input = QLineEdit()
-        self.notes_input.setPlaceholderText("Notes on this repetition")
-        self.incomplete_btn = QPushButton("Incomplete")
-        self.incomplete_btn.setCheckable(True)
-        self.missed_btn = QPushButton("Missed Contact")
-        self.missed_btn.setCheckable(True)
-        anno_row.addWidget(QLabel("Notes:"))
-        anno_row.addWidget(self.notes_input)
-        anno_row.addWidget(self.incomplete_btn)
-        anno_row.addWidget(self.missed_btn)
-        ctrl_layout.addLayout(anno_row)
+        # Single Row for 4 Markers
+        row_marks = QHBoxLayout()
+        for k in self.marks.keys():
+            btn = QPushButton(k.replace('_', ' ').title())
+            btn.clicked.connect(lambda ch, key=k: self.add_mark(key))
+            row_marks.addWidget(btn)
+        ctrls.addLayout(row_marks)
 
-        mark_row = QHBoxLayout()
-        self.start_btn = QPushButton("Mark Start")
-        self.start_btn.clicked.connect(self.mark_obstacle_start)
-        self.stop_btn = QPushButton("Mark Stop")
-        self.stop_btn.clicked.connect(self.mark_obstacle_stop)
+        # Save/Clear
+        row_act = QHBoxLayout()
+        clr_btn = QPushButton("Clear Marks")
+        clr_btn.clicked.connect(self.clear_all)
+        self.save_btn = QPushButton("Save")
+        self.save_btn.clicked.connect(self.save_data)
+        self.save_btn.setStyleSheet("background-color: #00bcd4; color: white; font-weight: bold;")
+        row_act.addWidget(clr_btn)
+        row_act.addWidget(self.save_btn)
+        ctrls.addLayout(row_act)
         
-        self.clear_btn = QPushButton("Clear Marks")
-        self.clear_btn.clicked.connect(self.handle_manual_clear)
-        self.clear_btn.setStyleSheet("background-color: #757575; color: white;")
-        
-        self.save_btn = QPushButton("SAVE")
-        self.save_btn.clicked.connect(self.save_result)
-        self.save_btn.setStyleSheet("background-color: #00bcd4; color: white;")
-        
-        mark_row.addWidget(self.start_btn)
-        mark_row.addWidget(self.stop_btn)
-        mark_row.addWidget(self.clear_btn)
-        mark_row.addWidget(self.save_btn)
-        ctrl_layout.addLayout(mark_row)
-
-        self.splitter.addWidget(self.controls_container)
-        self.main_layout.addWidget(self.splitter)
-        self.splitter.setStyleSheet("QSplitter::handle { background-color: #cccccc; height: 8px; }")
-        
-        self._set_controls_enabled(False)
-
-    def keyPressEvent(self, event):
-        """Handle keyboard shortcuts."""
-        if self.current_dir_index == -1:
-            super().keyPressEvent(event)
-            return
-
-        key = event.key()
-        if key == Qt.Key_Space and not self.notes_input.hasFocus():
-            self.toggle_playback()
-        elif key == Qt.Key_S and not self.notes_input.hasFocus():
-            self.mark_obstacle_start()
-        elif key == Qt.Key_D and not self.notes_input.hasFocus():
-            self.mark_obstacle_stop()
-        elif key in (Qt.Key_Return, Qt.Key_Enter):
-            self.save_result()
-        else:
-            super().keyPressEvent(event)
-
-    def save_ui_settings(self):
-        self.settings.setValue("splitterSizes", self.splitter.saveState())
-        self.settings.setValue("windowGeometry", self.saveGeometry())
-
-    def load_ui_settings(self):
-        if self.settings.value("splitterSizes"):
-            self.splitter.restoreState(self.settings.value("splitterSizes"))
-        if self.settings.value("windowGeometry"):
-            self.restoreGeometry(self.settings.value("windowGeometry"))
-
-    def quit_application(self):
-        self.close()
-
-    def closeEvent(self, event):
-        self.save_ui_settings()
-        if self.cap: self.cap.release()
-        super().closeEvent(event)
-
-    def _set_controls_enabled(self, enabled):
-        widgets = [self.play_btn, self.offset_slider, self.pos_slider, 
-                   self.save_btn, self.start_btn, self.stop_btn, self.clear_btn,
-                   self.notes_input, self.incomplete_btn, self.missed_btn]
-        for w in widgets: w.setEnabled(enabled)
+        layout.addLayout(ctrls)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(33)
 
     def choose_directory(self):
-        p = QFileDialog.getExistingDirectory(self, "Select Root Directory", os.path.expanduser("~"))
+        p = QFileDialog.getExistingDirectory(self, "Select Root")
         if p:
-            self.root_dir = p
-            all_dirs = [
-                os.path.join(p, d) for d in sorted(os.listdir(p)) 
-                if os.path.isdir(os.path.join(p, d)) and not d.startswith('.')
-            ]
-            
-            if not all_dirs:
-                QMessageBox.warning(self, "No Directories", "No task subdirectories found.")
-                return
+            self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
+            if self.dirs:
+                self.idx = 0
+                self.load_file(0)
 
-            self.file_dirs = all_dirs
-            resume_index = 0
-            if os.path.exists(LOG_FILE):
-                try:
-                    with open(LOG_FILE, 'r') as f:
-                        reader = list(csv.DictReader(f))
-                        if reader:
-                            last_logged_dir = reader[-1]['Directory']
-                            for i, full_path in enumerate(self.file_dirs):
-                                if os.path.basename(full_path) == last_logged_dir:
-                                    resume_index = i + 1
-                                    break
-                except Exception as e:
-                    print(f"Could not read log for resume: {e}")
+    def load_file(self, i):
+        self.clear_all()
+        dir_path = self.dirs[i]
+        v, c = find_video_csv_pair(dir_path)
+        df, _ = load_data(c)
+        if df is not None:
+            self.plot.update_data(df)
+            if self.cap: self.cap.release()
+            self.cap = cv2.VideoCapture(v)
+            self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            self.file_lbl.setText(f"File: {os.path.basename(dir_path)}")
+            self.video_time_ms = 0
+            self.is_playing = False
+            self.play_btn.setText("PLAY")
+            self.show_frame()
 
-            if resume_index < len(self.file_dirs):
-                self.current_dir_index = resume_index
-                self.load_file_pair(resume_index)
-            else:
-                QMessageBox.information(self, "Done", "All directories in this folder have already been logged!")
-                self.current_dir_index = 0
-                self.load_file_pair(0)
-
-    def load_file_pair(self, index):
-        self.save_ui_settings()
-        current_dir = self.file_dirs[index]
-        self.file_label.setText(f"File: {os.path.basename(current_dir)}")
-        
-        self.repetition_start_time = time.time()
-        video_path, csv_path = find_video_csv_pair(current_dir)
-        df, error = load_data(csv_path)
-        
-        if df is None:
-            QMessageBox.critical(self, "Data Error", f"Failed to load CSV: {error}")
-            return
-
-        # Reset sync variables and clear markers
-        self.video_time_ms = 0
-        self.offset_ms = 0
-        self.obstacle_start_time = None
-        self.obstacle_stop_time = None
-        self.plot_canvas.clear_markers()
-        
-        self.df = df
-        self.current_video_path, self.current_csv_path = video_path, csv_path
-        self.plot_canvas.update_data(self.df)
-        
-        out_v = os.path.join(current_dir, DOWNSCALED_VIDEO_PREFIX + os.path.basename(video_path))
-        v_to_use, _ = run_ffmpeg_downscale(video_path, out_v)
-        
-        if self.cap: self.cap.release()
-        self.cap = cv2.VideoCapture(v_to_use)
-        
-        if not self.cap.isOpened():
-            QMessageBox.critical(self, "Video Error", "Could not open video file.")
-            return
-
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        self.video_duration = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) * 1000 / self.fps)
-        self.frame_delay = int(1000/self.fps) if self.fps > 0 else 33
-        
-        self.offset_slider.setValue(OFFSET_RANGE_MS) 
-        self.notes_input.clear()
-        self.incomplete_btn.setChecked(False)
-        self.missed_btn.setChecked(False)
-        self.pos_slider.setRange(0, self.video_duration)
-        self._set_controls_enabled(True)
-
-        # Immediate video refresh
-        self.is_playing = False 
-        self.play_btn.setText("PLAY")
-        ret, frame = self.cap.read()
-        if ret:
-            self.display_frame(frame)
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0) 
-        self.update_frame()
+    def toggle_play(self):
+        self.is_playing = not self.is_playing
+        self.play_btn.setText("PAUSE" if self.is_playing else "PLAY")
 
     def update_frame(self):
         if self.is_playing and self.cap:
             ret, frame = self.cap.read()
             if ret:
                 self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
-                self.display_frame(frame)
+                self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
             else:
                 self.is_playing = False
                 self.play_btn.setText("PLAY")
-                
-        self.plot_canvas.update_marker(self.video_time_ms + self.offset_ms, self.offset_ms, self.is_playing)
-        if not self.pos_slider.isSliderDown(): 
-            self.pos_slider.setValue(self.video_time_ms)
 
-    def display_frame(self, frame):
-        if frame is None: return
+    def scrub_video(self, val):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, val)
+            ret, frame = self.cap.read()
+            if ret:
+                self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+
+    def show_frame(self):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_MSEC, self.video_time_ms)
+            ret, frame = self.cap.read()
+            if ret: self.display_img(frame)
+
+    def display_img(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
-        self.video_frame_widget.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_frame_widget.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
 
-    def mark_obstacle_start(self):
-        self.obstacle_start_time = self.video_time_ms
-        data_time_s = (self.obstacle_start_time + self.offset_ms) / 1000.0
-        self.plot_canvas.set_start_marker(data_time_s)
+    def update_offset(self, val):
+        self.offset_ms = val - 30000
+        self.plot.update_cursor(self.video_time_ms, self.offset_ms)
 
-    def mark_obstacle_stop(self):
-        self.obstacle_stop_time = self.video_time_ms
-        data_time_s = (self.obstacle_stop_time + self.offset_ms) / 1000.0
-        self.plot_canvas.set_stop_marker(data_time_s)
+    def add_mark(self, key):
+        self.marks[key] = self.video_time_ms
+        self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
 
-    def handle_manual_clear(self):
-        self.obstacle_start_time = None
-        self.obstacle_stop_time = None
-        self.plot_canvas.clear_markers()
+    def clear_all(self):
+        self.marks = {k: None for k in self.marks.keys()}
+        self.plot.clear_markers()
+
+    def save_data(self):
+        if self.idx == -1: return
+        log = {'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Directory': os.path.basename(self.dirs[self.idx]), 'Offset_ms': self.offset_ms}
+        log.update({f"{k}_ms": v for k, v in self.marks.items()})
+        exists = os.path.exists(LOG_FILE)
+        with open(LOG_FILE, 'a', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=log.keys())
+            if not exists: w.writeheader()
+            w.writerow(log)
+        self.next_file()
 
     def next_file(self):
-        if self.current_dir_index < len(self.file_dirs) - 1:
-            self.current_dir_index += 1
-            self.load_file_pair(self.current_dir_index)
+        if self.idx < len(self.dirs) - 1:
+            self.idx += 1
+            self.load_file(self.idx)
         else:
-            QMessageBox.information(self, "Done", "All repetitions in this batch are complete!")
+            QMessageBox.information(self, "Done", "All files in directory processed!")
 
-    def toggle_playback(self):
-        self.is_playing = not self.is_playing
-        self.play_btn.setText("PAUSE" if self.is_playing else "PLAY")
-
-    def update_offset_value(self, val):
-        self.offset_ms = val - OFFSET_RANGE_MS
-        if self.obstacle_start_time is not None:
-            self.plot_canvas.set_start_marker((self.obstacle_start_time + self.offset_ms) / 1000.0)
-        if self.obstacle_stop_time is not None:
-            self.plot_canvas.set_stop_marker((self.obstacle_stop_time + self.offset_ms) / 1000.0)
-
-    def update_scrub_position(self, pos):
-        self.video_time_ms = pos
-        self.cap.set(cv2.CAP_PROP_POS_MSEC, pos)
-        ret, frame = self.cap.read()
-        if ret: self.display_frame(frame)
-
-    def save_result(self):
-        duration = round(time.time() - self.repetition_start_time, 2)
-        fieldnames = [
-            'Timestamp', 'Computer_Name', 'Directory', 'Video_File', 
-            'CSV_File', 'Offset_ms', 'Start_ms', 'Stop_ms', 
-            'Incomplete', 'Missed_Contact', 'Duration_s', 'Notes'
-        ]
-        log_data = {
-            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'Computer_Name': self.computer_name,
-            'Directory': os.path.basename(self.file_dirs[self.current_dir_index]),
-            'Video_File': os.path.basename(self.current_video_path),
-            'CSV_File': os.path.basename(self.current_csv_path),
-            'Offset_ms': self.offset_ms,
-            'Start_ms': self.obstacle_start_time if self.obstacle_start_time is not None else 'N/A',
-            'Stop_ms': self.obstacle_stop_time if self.obstacle_stop_time is not None else 'N/A',
-            'Incomplete': self.incomplete_btn.isChecked(),
-            'Missed_Contact': self.missed_btn.isChecked(),
-            'Duration_s': duration,
-            'Notes': self.notes_input.text()
+    def keyPressEvent(self, e):
+        mapping = {
+            Qt.Key_Space: self.toggle_play,
+            Qt.Key_S: lambda: self.add_mark('stride_start'),
+            Qt.Key_D: lambda: self.add_mark('obs_start'), 
+            Qt.Key_F: lambda: self.add_mark('stride_stop'),
+            Qt.Key_G: lambda: self.add_mark('obs_stop'),
+            Qt.Key_Return: self.save_data
         }
-        exists = os.path.exists(LOG_FILE)
-        try:
-            with open(LOG_FILE, 'a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                if not exists: writer.writeheader()
-                writer.writerow(log_data)
-            QMessageBox.information(self, "Saved", f"Results for {log_data['Directory']} logged successfully.")
-            self.next_file() 
-        except Exception as e:
-            QMessageBox.critical(self, "Save Error", f"Could not log result: {e}")
+        if e.key() in mapping: mapping[e.key()]()
+        else: super().keyPressEvent(e)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
