@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter
+    QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter, QCheckBox
 )
 from PyQt5.QtGui import QImage, QPixmap, QFont
 from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
@@ -108,17 +108,29 @@ class MatplotlibCanvas(FigureCanvas):
 
     def update_data(self, df):
         self.df = df
-        mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
+        a_mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
+        g_mag = np.sqrt(df['Gx']**2 + df['Gy']**2 + df['Gz']**2)
         diffs = np.diff(df['Relative_Time_s'])
         fs = 1.0 / np.mean(diffs) if len(diffs) > 0 else 100.0
-        self.df['Amag_F'] = apply_lowpass(mag, 5.0, fs)
+        self.df['Amag_F'] = apply_lowpass(a_mag, 5.0, fs)
+        self.df['Gmag_F'] = apply_lowpass(g_mag, 5.0, fs)
+        
+        self.df['Amag_F_norm'] = (self.df['Amag_F'] - self.df['Amag_F'].mean())/self.df['Amag_F'].std()
+        self.df['Gmag_F_norm'] = (self.df['Gmag_F'] - self.df['Gmag_F'].mean())/self.df['Gmag_F'].std()
+        a_mag_norm = (a_mag - np.mean(a_mag)) / np.std(a_mag)
+        g_mag_norm = (g_mag - np.mean(g_mag)) / np.std(g_mag)
+        
         self.ax.clear()
-        self.ax.plot(df['Relative_Time_s'], mag, color='lightblue', lw=0.8, alpha=0.4)
-        self.ax.plot(df['Relative_Time_s'], self.df['Amag_F'], color='#003366', lw=1.5, label='Accel (5Hz)')
+        self.ax.plot(df['Relative_Time_s'], a_mag_norm, color='lightblue', lw=0.8, alpha=0.6)
+        self.ax.plot(df['Relative_Time_s'], self.df['Amag_F_norm'], color='#003366', lw=1.5, label='Accel (5Hz)')
+        self.ax.plot(df['Relative_Time_s'], g_mag_norm, color='lightcoral', lw=0.8, alpha=0.6)
+        self.ax.plot(df['Relative_Time_s'], self.df['Gmag_F_norm'], color='#663300', lw=1.5, label='Gyro (5Hz)')
+        
         if 'Pressure' in df.columns:
             p = apply_lowpass(df['Pressure'].values, 2.0, fs)
-            p_s = (p - p.min()) / (p.max() - p.min()) * mag.max() if p.max() > p.min() else p
+            p_s = (p - np.mean(p)) / np.std(p)
             self.ax.plot(df['Relative_Time_s'], p_s, color='orange', lw=1.2, alpha=0.7, label='Pressure')
+            
         self.ax.grid(True, ls='--', alpha=0.6)
         self.reset_marker_objects()
         self.ax.legend(fontsize=7, loc='upper left')
@@ -134,7 +146,7 @@ class MatplotlibCanvas(FigureCanvas):
     def update_cursor(self, t_ms, offset_ms):
         if self.df is None: return
         idx = find_closest_data_index(self.df, t_ms + offset_ms)
-        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F']])
+        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F_norm']])
         self.draw()
 
 class SyncPlayer(QMainWindow):
@@ -147,58 +159,48 @@ class SyncPlayer(QMainWindow):
         self.offset_ms = 0
         self.idx = -1
         self.dirs = []
+        self.current_video_path = None
+        self.computer_name = platform.node()
         self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
         
         self.central = QWidget()
         self.setCentralWidget(self.central)
         layout = QVBoxLayout(self.central)
 
-        # Header with Next Button restored
+        # Header
         header = QHBoxLayout()
         self.file_lbl = QLabel("File: None")
         dir_btn = QPushButton("Choose Directory")
         dir_btn.clicked.connect(self.choose_directory)
         self.next_btn = QPushButton("Next File >>")
         self.next_btn.clicked.connect(self.next_file)
-        header.addWidget(self.file_lbl)
-        header.addWidget(dir_btn)
-        header.addWidget(self.next_btn)
+        header.addWidget(self.file_lbl); header.addWidget(dir_btn); header.addWidget(self.next_btn)
         layout.addLayout(header)
 
-        # Splitter (Video & Plot)
+        # Splitter
         self.splitter = QSplitter(Qt.Vertical)
-        self.video_lbl = QLabel()
-        self.video_lbl.setStyleSheet("background-color: black;")
-        self.video_lbl.setAlignment(Qt.AlignCenter)
-        self.video_lbl.setMinimumSize(400, 300)
+        self.video_lbl = QLabel(); self.video_lbl.setStyleSheet("background-color: black;"); self.video_lbl.setAlignment(Qt.AlignCenter); self.video_lbl.setMinimumSize(400, 300)
         self.plot = MatplotlibCanvas(self)
-        self.splitter.addWidget(self.video_lbl)
-        self.splitter.addWidget(self.plot)
+        self.splitter.addWidget(self.video_lbl); self.splitter.addWidget(self.plot)
         layout.addWidget(self.splitter)
 
         # Time Scroll
         scroll_layout = QHBoxLayout()
         self.time_slider = QSlider(Qt.Horizontal)
         self.time_slider.sliderMoved.connect(self.scrub_video)
-        scroll_layout.addWidget(QLabel("Time:"))
-        scroll_layout.addWidget(self.time_slider)
+        scroll_layout.addWidget(QLabel("Time:")); scroll_layout.addWidget(self.time_slider)
         layout.addLayout(scroll_layout)
 
-        # Consolidated Controls
+        # Controls
         ctrls = QVBoxLayout()
         row_play = QHBoxLayout()
         self.play_btn = QPushButton("PLAY")
         self.play_btn.clicked.connect(self.toggle_play)
-        self.offset_slider = QSlider(Qt.Horizontal)
-        self.offset_slider.setRange(0, 60000)
-        self.offset_slider.setValue(30000)
-        self.offset_slider.valueChanged.connect(self.update_offset)
-        row_play.addWidget(self.play_btn)
-        row_play.addWidget(QLabel("Sync Offset:"))
-        row_play.addWidget(self.offset_slider)
+        self.offset_slider = QSlider(Qt.Horizontal); self.offset_slider.setRange(0, 60000); self.offset_slider.setValue(30000); self.offset_slider.valueChanged.connect(self.update_offset)
+        row_play.addWidget(self.play_btn); row_play.addWidget(QLabel("Sync Offset:")); row_play.addWidget(self.offset_slider)
         ctrls.addLayout(row_play)
 
-        # Single Row for 4 Markers
+        # Markers
         row_marks = QHBoxLayout()
         for k in self.marks.keys():
             btn = QPushButton(k.replace('_', ' ').title())
@@ -206,29 +208,28 @@ class SyncPlayer(QMainWindow):
             row_marks.addWidget(btn)
         ctrls.addLayout(row_marks)
 
-        # Save/Clear
+        # Action Buttons
         row_act = QHBoxLayout()
-        clr_btn = QPushButton("Clear Marks")
-        clr_btn.clicked.connect(self.clear_all)
+        clr_btn = QPushButton("Clear Marks"); clr_btn.clicked.connect(self.clear_all)
+        self.abnormal_checkbox = QCheckBox("Abnormal")
         self.save_btn = QPushButton("Save")
         self.save_btn.clicked.connect(self.save_data)
         self.save_btn.setStyleSheet("background-color: #00bcd4; color: white; font-weight: bold;")
+        
         row_act.addWidget(clr_btn)
+        row_act.addWidget(self.abnormal_checkbox)
         row_act.addWidget(self.save_btn)
         ctrls.addLayout(row_act)
         
         layout.addLayout(ctrls)
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frame)
-        self.timer.start(33)
+        self.timer = QTimer(); self.timer.timeout.connect(self.update_frame); self.timer.start(33)
 
     def choose_directory(self):
         p = QFileDialog.getExistingDirectory(self, "Select Root")
         if p:
             self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
             if self.dirs:
-                self.idx = 0
-                self.load_file(0)
+                self.idx = 0; self.load_file(0)
 
     def load_file(self, i):
         self.clear_all()
@@ -239,16 +240,15 @@ class SyncPlayer(QMainWindow):
             self.plot.update_data(df)
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
+            self.current_video_path = v
             self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
             self.file_lbl.setText(f"File: {os.path.basename(dir_path)}")
-            self.video_time_ms = 0
-            self.is_playing = False
-            self.play_btn.setText("PLAY")
+            self.video_time_ms = 0; self.is_playing = False; self.play_btn.setText("PLAY")
+            self.abnormal_checkbox.setChecked(False) 
             self.show_frame()
 
     def toggle_play(self):
-        self.is_playing = not self.is_playing
-        self.play_btn.setText("PAUSE" if self.is_playing else "PLAY")
+        self.is_playing = not self.is_playing; self.play_btn.setText("PAUSE" if self.is_playing else "PLAY")
 
     def update_frame(self):
         if self.is_playing and self.cap:
@@ -258,9 +258,7 @@ class SyncPlayer(QMainWindow):
                 self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
                 self.display_img(frame)
                 self.plot.update_cursor(self.video_time_ms, self.offset_ms)
-            else:
-                self.is_playing = False
-                self.play_btn.setText("PLAY")
+            else: self.is_playing = False; self.play_btn.setText("PLAY")
 
     def scrub_video(self, val):
         if self.cap:
@@ -284,32 +282,45 @@ class SyncPlayer(QMainWindow):
         self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
 
     def update_offset(self, val):
-        self.offset_ms = val - 30000
-        self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
 
     def add_mark(self, key):
-        self.marks[key] = self.video_time_ms
-        self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
+        self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
 
     def clear_all(self):
-        self.marks = {k: None for k in self.marks.keys()}
-        self.plot.clear_markers()
+        self.marks = {k: None for k in self.marks.keys()}; self.plot.clear_markers()
 
     def save_data(self):
         if self.idx == -1: return
-        log = {'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Directory': os.path.basename(self.dirs[self.idx]), 'Offset_ms': self.offset_ms}
+        
+        fieldnames = [
+            'Timestamp', 'Computer_Name', 'Directory', 'Video_File', 'Offset_ms', 'Abnormal',
+            'stride_start_ms', 'obs_start_ms', 'obs_stop_ms', 'stride_stop_ms'
+        ]
+        
+        log = {
+            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+            'Computer_Name': self.computer_name,
+            'Directory': os.path.basename(self.dirs[self.idx]), 
+            'Video_File': os.path.basename(self.current_video_path) if self.current_video_path else 'N/A',
+            'Offset_ms': self.offset_ms,
+            'Abnormal': 1 if self.abnormal_checkbox.isChecked() else 0
+        }
         log.update({f"{k}_ms": v for k, v in self.marks.items()})
+        
         exists = os.path.exists(LOG_FILE)
-        with open(LOG_FILE, 'a', newline='') as f:
-            w = csv.DictWriter(f, fieldnames=log.keys())
-            if not exists: w.writeheader()
-            w.writerow(log)
-        self.next_file()
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                if not exists: w.writeheader()
+                w.writerow(log)
+            self.next_file()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
 
     def next_file(self):
         if self.idx < len(self.dirs) - 1:
-            self.idx += 1
-            self.load_file(self.idx)
+            self.idx += 1; self.load_file(self.idx)
         else:
             QMessageBox.information(self, "Done", "All files in directory processed!")
 
@@ -318,15 +329,12 @@ class SyncPlayer(QMainWindow):
             Qt.Key_Space: self.toggle_play,
             Qt.Key_S: lambda: self.add_mark('stride_start'),
             Qt.Key_D: lambda: self.add_mark('obs_start'), 
-            Qt.Key_F: lambda: self.add_mark('stride_stop'),
-            Qt.Key_G: lambda: self.add_mark('obs_stop'),
+            Qt.Key_F: lambda: self.add_mark('obs_stop'),
+            Qt.Key_G: lambda: self.add_mark('stride_stop'),
             Qt.Key_Return: self.save_data
         }
         if e.key() in mapping: mapping[e.key()]()
         else: super().keyPressEvent(e)
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    player = SyncPlayer()
-    player.show()
-    sys.exit(app.exec_())
+    app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
