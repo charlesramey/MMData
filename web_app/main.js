@@ -139,7 +139,7 @@ async function loadFile(idx) {
     const csvText = await csvFile.text();
     processCSV(csvText);
 
-    // Setup Audio Context for Spectrogram (re-using video audio)
+    // Setup Audio Context for Spectrogram
     setupSpectrogram(vidFile);
 
     // Clear marks
@@ -162,9 +162,11 @@ const videoPlayer = document.getElementById('videoPlayer');
 const btnPlay = document.getElementById('btnPlay');
 const selSpeed = document.getElementById('selSpeed');
 const rngOffset = document.getElementById('rngOffset');
+const btnToggleSpec = document.getElementById('btnToggleSpec');
 
 let isPlaying = false;
 let syncOffsetMs = 30000;
+let showSpectrogram = true;
 
 btnPlay.addEventListener('click', () => {
     if (videoPlayer.paused) {
@@ -182,14 +184,21 @@ selSpeed.addEventListener('change', () => {
 
 rngOffset.addEventListener('input', () => {
     syncOffsetMs = parseInt(rngOffset.value);
-    drawPlots(); // Redraw cursor
+    updateCursor(videoPlayer.currentTime * 1000);
 });
 
 videoPlayer.addEventListener('timeupdate', () => {
-    // Update cursors on plots
     const t_ms = videoPlayer.currentTime * 1000;
     updateCursor(t_ms);
 });
+
+if (btnToggleSpec) {
+    btnToggleSpec.addEventListener('click', () => {
+        showSpectrogram = !showSpectrogram;
+        const canvas = document.getElementById('spectrogramCanvas');
+        canvas.style.display = showSpectrogram ? 'block' : 'none';
+    });
+}
 
 // Spectrogram Logic
 let audioCtx = null;
@@ -203,52 +212,331 @@ async function setupSpectrogram(file) {
         const arrayBuffer = await file.arrayBuffer();
         const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-        // Compute Spectrogram Image (Simplified)
-        // For a real app, we'd use an OfflineAudioContext + AnalyserNode or a JS FFT library.
-        // Doing full FFT in JS for a large file can be slow on the main thread.
-        // Here we will just draw a dummy waveform for visualization proof-of-concept
-        // OR implement a basic block-based FFT.
-
-        drawWaveform(audioBuffer);
+        // Draw Spectrogram
+        drawSpectrogram(audioBuffer);
     } catch (e) {
         console.error("Audio processing failed", e);
     }
 }
 
-function drawWaveform(buffer) {
-    const data = buffer.getChannelData(0);
-    const step = Math.ceil(data.length / specCanvas.width);
-    const amp = specCanvas.height / 2;
+// Simple FFT Implementation (Radix-2)
+function fft(real, imag) {
+    const n = real.length;
+    if (n === 0) return;
+    if ((n & (n - 1)) !== 0) throw new Error("FFT length must be power of 2");
 
-    specCtx.fillStyle = 'black';
-    specCtx.fillRect(0, 0, specCanvas.width, specCanvas.height);
-    specCtx.beginPath();
-    specCtx.strokeStyle = '#00bcd4';
-
-    for (let i = 0; i < specCanvas.width; i++) {
-        let min = 1.0;
-        let max = -1.0;
-        for (let j = 0; j < step; j++) {
-            const datum = data[i * step + j];
-            if (datum < min) min = datum;
-            if (datum > max) max = datum;
+    // Bit-reversal
+    let j = 0;
+    for (let i = 0; i < n; i++) {
+        if (i < j) {
+            [real[i], real[j]] = [real[j], real[i]];
+            [imag[i], imag[j]] = [imag[j], imag[i]];
         }
-        specCtx.moveTo(i, (1 + min) * amp);
-        specCtx.lineTo(i, (1 + max) * amp);
+        let m = n >> 1;
+        while (m >= 1 && j >= m) {
+            j -= m;
+            m >>= 1;
+        }
+        j += m;
     }
-    specCtx.stroke();
 
-    // Store image for redraw
-    specBuffer = specCtx.getImageData(0, 0, specCanvas.width, specCanvas.height);
+    // Butterfly
+    for (let step = 1; step < n; step <<= 1) {
+        const jump = step << 1;
+        const deltaAngle = -Math.PI / step;
+        const sinDelta = Math.sin(deltaAngle);
+        const cosDelta = Math.cos(deltaAngle);
+
+        let sinAlpha = 0;
+        let cosAlpha = 1; // cos(0)
+
+        for (let grp = 0; grp < step; grp++) {
+            for (let i = grp; i < n; i += jump) {
+                const k = i + step;
+                const tReal = cosAlpha * real[k] - sinAlpha * imag[k];
+                const tImag = cosAlpha * imag[k] + sinAlpha * real[k];
+                real[k] = real[i] - tReal;
+                imag[k] = imag[i] - tImag;
+                real[i] += tReal;
+                imag[i] += tImag;
+            }
+            // Update angles
+            const tempCos = cosAlpha * cosDelta - sinAlpha * sinDelta;
+            sinAlpha = cosAlpha * sinDelta + sinAlpha * cosDelta;
+            cosAlpha = tempCos;
+        }
+    }
+}
+
+function drawSpectrogram(buffer) {
+    // Set canvas internal size to match display size for sharpness
+    const displayWidth = specCanvas.clientWidth || 800;
+    const displayHeight = specCanvas.clientHeight || 150;
+    specCanvas.width = displayWidth;
+    specCanvas.height = displayHeight;
+
+    const data = buffer.getChannelData(0);
+    const canvasWidth = specCanvas.width;
+    const canvasHeight = specCanvas.height;
+
+    // Parameters
+    const fftSize = 512; // Frequency resolution (256 bins)
+
+    // Draw background
+    specCtx.fillStyle = 'black';
+    specCtx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+    // Helper arrays for FFT
+    const real = new Float32Array(fftSize);
+    const imag = new Float32Array(fftSize);
+    const windowFunc = new Float32Array(fftSize);
+    for(let i=0; i<fftSize; i++) windowFunc[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1))); // Hanning
+
+    // Optimization: Create ImageData and manipulate pixels directly
+    const imgData = specCtx.createImageData(canvasWidth, canvasHeight);
+    const pixels = imgData.data;
+
+    for (let x = 0; x < canvasWidth; x++) {
+        // Calculate the center sample index for this pixel column
+        const offset = Math.floor(x * (data.length - fftSize) / canvasWidth);
+        if (offset < 0) continue;
+
+        // Prepare Window
+        for (let i = 0; i < fftSize; i++) {
+            // Guard against out of bounds
+            const val = (offset + i < data.length) ? data[offset + i] : 0;
+            real[i] = val * windowFunc[i];
+            imag[i] = 0;
+        }
+
+        // Compute FFT
+        fft(real, imag);
+
+        // Compute Magnitude & Draw
+        const bins = fftSize / 2;
+
+        for (let y = 0; y < canvasHeight; y++) {
+            // Map y (0 is top) to frequency bin (0 is DC)
+            const binIdx = Math.floor((1 - (y / canvasHeight)) * bins);
+            if (binIdx < 0 || binIdx >= bins) continue;
+
+            const mag = Math.sqrt(real[binIdx]**2 + imag[binIdx]**2);
+            // Log scale for magnitude
+            const db = 20 * Math.log10(mag + 1e-6);
+
+            // Normalize for visualization: -80dB to 0dB roughly
+            // Adjust contrast here
+            let val = (db + 80) / 80;
+            if (val < 0) val = 0;
+            if (val > 1) val = 1;
+
+            // Color Mapping: Black -> Blue -> Red -> Yellow -> White
+            let r=0, g=0, b=0;
+            if (val < 0.25) {
+                const t = val / 0.25;
+                r=0; g=0; b=Math.floor(255*t);
+            } else if (val < 0.5) {
+                const t = (val-0.25)/0.25;
+                r=Math.floor(255*t); g=0; b=Math.floor(255*(1-t));
+            } else if (val < 0.75) {
+                const t = (val-0.5)/0.25;
+                r=255; g=Math.floor(255*t); b=0;
+            } else {
+                const t = (val-0.75)/0.25;
+                r=255; g=255; b=Math.floor(255*t);
+            }
+
+            const pixIdx = (y * canvasWidth + x) * 4;
+            pixels[pixIdx] = r;
+            pixels[pixIdx+1] = g;
+            pixels[pixIdx+2] = b;
+            pixels[pixIdx+3] = 255; // Alpha
+        }
+    }
+
+    specCtx.putImageData(imgData, 0, 0);
+    specBuffer = specCtx.getImageData(0, 0, canvasWidth, canvasHeight);
+}
+
+
+// Sensor Plotting Logic
+let sensorChart = null;
+const sensorCanvas = document.getElementById('sensorCanvas');
+
+// --- SIGNAL PROCESSING HELPERS ---
+
+function calculateMagnitude(xArr, yArr, zArr) {
+    return xArr.map((v, i) => Math.sqrt(v**2 + yArr[i]**2 + zArr[i]**2));
+}
+
+function normalizeData(arr) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let v of arr) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+    }
+    const range = max - min;
+    if (range === 0) return arr.map(() => 0.5);
+    return arr.map(v => (v - min) / range);
+}
+
+function lowPassFilter(data, fs, cutoff) {
+    if (cutoff >= fs / 2) return data;
+
+    const omega0 = 2 * Math.PI * cutoff / fs;
+    const sinOmega0 = Math.sin(omega0);
+    const cosOmega0 = Math.cos(omega0);
+    const Q = 0.7071;
+    const alpha_bi = sinOmega0 / (2 * Q);
+
+    const b0 = (1 - cosOmega0) / 2;
+    const b1 = 1 - cosOmega0;
+    const b2 = (1 - cosOmega0) / 2;
+    const a0 = 1 + alpha_bi;
+    const a1 = -2 * cosOmega0;
+    const a2 = 1 - alpha_bi;
+
+    const b0n = b0 / a0;
+    const b1n = b1 / a0;
+    const b2n = b2 / a0;
+    const a1n = a1 / a0;
+    const a2n = a2 / a0;
+
+    const y = new Array(data.length).fill(0);
+
+    for (let i = 0; i < data.length; i++) {
+        const x_0 = data[i];
+        const x_1 = i > 0 ? data[i-1] : 0;
+        const x_2 = i > 1 ? data[i-2] : 0;
+        const y_1 = i > 0 ? y[i-1] : 0;
+        const y_2 = i > 1 ? y[i-2] : 0;
+
+        y[i] = b0n * x_0 + b1n * x_1 + b2n * x_2 - a1n * y_1 - a2n * y_2;
+    }
+
+    return y;
+}
+
+function processCSV(text) {
+    const results = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+    const data = results.data;
+
+    if (!data || data.length < 2) {
+        console.error("Invalid or empty CSV");
+        return;
+    }
+
+    const headers = Object.keys(data[0]);
+    const hasGyro = headers.includes('Gx') && headers.includes('Gy') && headers.includes('Gz');
+
+    const timestamps = data.map(r => r.Timestamp);
+    const t0 = timestamps[0];
+    const t1 = timestamps[timestamps.length - 1];
+
+    let duration = t1 - t0;
+    const startT = t0;
+    const labels = timestamps.map(t => (t - startT));
+
+    const count = timestamps.length;
+    let avgDiff = duration / count;
+    if (avgDiff === 0 || isNaN(avgDiff)) avgDiff = 0.01;
+    const fs = 1.0 / avgDiff;
+    console.log(`Detected fs: ${fs.toFixed(2)} Hz`);
+
+    const ax = data.map(r => r.Ax || 0);
+    const ay = data.map(r => r.Ay || 0);
+    const az = data.map(r => r.Az || 0);
+
+    let gx = [], gy = [], gz = [];
+    if (hasGyro) {
+        gx = data.map(r => r.Gx || 0);
+        gy = data.map(r => r.Gy || 0);
+        gz = data.map(r => r.Gz || 0);
+    }
+
+    let magAccel = calculateMagnitude(ax, ay, az);
+    let magGyro = hasGyro ? calculateMagnitude(gx, gy, gz) : [];
+
+    const cutoff = 5;
+    let magAccelLPF = lowPassFilter(magAccel, fs, cutoff);
+    let magGyroLPF = hasGyro ? lowPassFilter(magGyro, fs, cutoff) : [];
+
+    let normAccel = normalizeData(magAccelLPF);
+    let normGyro = hasGyro ? normalizeData(magGyroLPF) : [];
+
+    if (sensorChart) sensorChart.destroy();
+
+    const datasets = [
+        {
+            label: 'Accel Mag (5Hz LPF)',
+            data: normAccel,
+            borderColor: '#00bcd4',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1
+        }
+    ];
+
+    if (hasGyro) {
+        datasets.push({
+            label: 'Gyro Mag (5Hz LPF)',
+            data: normGyro,
+            borderColor: '#ff4081',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1
+        });
+    }
+
+    sensorChart = new Chart(sensorCanvas, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: {
+                    type: 'linear',
+                    display: true,
+                    title: { display: true, text: 'Time (s)', color: '#888' },
+                    grid: { color: '#333' },
+                    ticks: { color: '#888' }
+                },
+                y: {
+                    grid: { color: '#333' },
+                    title: { display: true, text: 'Normalized Mag', color: '#888' },
+                    ticks: { color: '#888' },
+                    min: 0,
+                    max: 1.1
+                }
+            },
+            plugins: {
+                legend: { labels: { color: 'white' } },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        }
+    });
+}
+
+function updateCursor(t_ms) {
+    drawSpectrogramCursor(t_ms);
 }
 
 function drawSpectrogramCursor(t_ms) {
     if (!specBuffer) return;
     specCtx.putImageData(specBuffer, 0, 0);
 
-    // Calculate X position based on time
-    // This assumes canvas width maps to full duration.
-    // For scrolling, we'd need more logic.
     const duration = videoPlayer.duration * 1000;
     if (duration > 0) {
         const x = (t_ms / duration) * specCanvas.width;
@@ -261,72 +549,7 @@ function drawSpectrogramCursor(t_ms) {
     }
 }
 
-// Sensor Plotting Logic
-let sensorChart = null;
-const sensorCanvas = document.getElementById('sensorCanvas');
-
-function processCSV(text) {
-    const results = Papa.parse(text, { header: true, dynamicTyping: true });
-    const data = results.data;
-
-    // Check columns
-    if (!data[0] || !data[0].Timestamp || !data[0].Ax) {
-        console.error("Invalid CSV format");
-        return;
-    }
-
-    // Prepare Chart Data
-    // We downsample for performance if needed, or use a scatterGL library.
-    // Chart.js might struggle with huge datasets, but for <30s it should be fine (~3000 pts).
-
-    const startT = data[0].Timestamp;
-    const labels = data.map(r => (r.Timestamp - startT) * 1000); // Relative time in ms
-    const mag = data.map(r => Math.sqrt(r.Ax**2 + r.Ay**2 + r.Az**2));
-
-    if (sensorChart) sensorChart.destroy();
-
-    sensorChart = new Chart(sensorCanvas, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Accel Mag',
-                data: mag,
-                borderColor: '#00bcd4',
-                borderWidth: 1,
-                pointRadius: 0,
-                fill: false
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: { mode: 'nearest', axis: 'x', intersect: false },
-            scales: {
-                x: {
-                    type: 'linear',
-                    display: true,
-                    grid: { color: '#444' }
-                },
-                y: {
-                    grid: { color: '#444' }
-                }
-            },
-            plugins: {
-                legend: { labels: { color: 'white' } }
-            }
-        }
-    });
-}
-
-function updateCursor(t_ms) {
-    drawSpectrogramCursor(t_ms);
-    // Note: Chart.js annotation plugin is needed for efficient vertical lines,
-    // or we draw on top. For now, we rely on hover interaction or simple updates.
-}
-
-// Marker & Data Saving Logic
+// Marker Logic
 let marks = {
     stride_start: null, obs_start: null, obs_stop: null, stride_stop: null
 };
@@ -334,7 +557,7 @@ let marks = {
 document.querySelectorAll('.marker-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
         const id = e.target.id;
-        const key = id.replace('btn', '').replace(/([A-Z])/g, '_$1').toLowerCase().substring(1); // btnStrideStart -> stride_start
+        const key = id.replace('btn', '').replace(/([A-Z])/g, '_$1').toLowerCase().substring(1);
         addMark(key);
     });
 });
@@ -347,7 +570,6 @@ function addMark(key) {
     const t_ms = videoPlayer.currentTime * 1000;
     marks[key] = Math.round(t_ms);
     console.log(`Marked ${key} at ${t_ms}ms`);
-    // Ideally verify visually (not implemented in this PoC)
 }
 
 function clearMarks() {
@@ -374,7 +596,6 @@ async function saveData() {
     const line = values.join(',') + '\n';
 
     if (syncLogHandle) {
-        // Use File System Access API
         try {
             const writable = await syncLogHandle.createWritable({ keepExistingData: true });
             const file = await syncLogHandle.getFile();
@@ -388,8 +609,6 @@ async function saveData() {
             alert("Save failed: " + e.message);
         }
     } else {
-        // Fallback: Download the line as a snippet or full CSV (simplified to alert download)
-        // In a real scenario, we'd append to a memory buffer and download the full log at the end.
         const blob = new Blob([line], { type: 'text/csv' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
