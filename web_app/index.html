@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MMData Web Sync Tool</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Load required libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>MMData Sync Tool (Web)</h1>
+            <button id="btnOpenDir">📂 Open Directory</button>
+            <span id="lblCurrentFile">No File Loaded</span>
+            <button id="btnNextFile" disabled>Next File ⏭</button>
+        </header>
+
+        <div id="main-content">
+            <div id="video-container">
+                <video id="videoPlayer" controls></video>
+                <canvas id="spectrogramCanvas"></canvas>
+            </div>
+            <div id="sensor-container">
+                <canvas id="sensorCanvas"></canvas>
+            </div>
+        </div>
+
+        <div id="controls">
+            <div class="row">
+                <button id="btnPlay">▶ PLAY</button>
+                <select id="selSpeed">
+                    <option value="1.0">1.0x</option>
+                    <option value="0.5">0.5x</option>
+                    <option value="0.25" selected>0.25x</option>
+                </select>
+                <label>Sync Offset: <input type="range" id="rngOffset" min="0" max="60000" value="30000"></label>
+            </div>
+
+            <div class="row grid-markers">
+                <button id="btnStrideStart" class="marker-btn stride-start">Stride Start (S)</button>
+                <button id="btnObsStart" class="marker-btn obs-start">Obstacle Start (D)</button>
+                <button id="btnObsStop" class="marker-btn obs-stop">Obstacle Stop (G)</button>
+                <button id="btnStrideStop" class="marker-btn stride-stop">Stride Stop (F)</button>
+            </div>
+
+            <div class="row">
+                <button id="btnToggleSpec">Toggle Spectrogram</button>
+                <label><input type="checkbox" id="chkAbnormal"> Abnormal</label>
+                <button id="btnClear">🗑 Clear Marks</button>
+                <button id="btnSave">💾 Save Data</button>
+            </div>
+        </div>
+    </div>
+    <script type="module" src="main.js"></script>
+</body>
+</html>
