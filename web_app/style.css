@@ -33,6 +33,13 @@ header {
     flex: 0 0 auto;
 }
 
+/* Wider slider for finer control */
+#rngOffset {
+    width: 400px;
+    max-width: 50vw;
+    cursor: pointer;
+}
+
 h1 { margin: 0; font-size: 1.2rem; color: #00bcd4; }
 
 button {

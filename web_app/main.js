@@ -22,7 +22,10 @@ const playheadPlugin = {
         // Ensure x scale exists
         if (!chart.scales.x) return;
 
-        const x = chart.scales.x.getPixelForValue(currentTime);
+        // Apply sync offset (syncOffsetMs is centered at 30000)
+        // Offset = (Slider - 30000) ms
+        const offsetSec = (syncOffsetMs - 30000) / 1000.0;
+        const x = chart.scales.x.getPixelForValue(currentTime + offsetSec);
 
         // Ensure x is within chart area
         const area = chart.chartArea;
@@ -267,6 +270,7 @@ const videoPlayer = document.getElementById('videoPlayer');
 const btnPlay = document.getElementById('btnPlay');
 const selSpeed = document.getElementById('selSpeed');
 const rngOffset = document.getElementById('rngOffset');
+const lblOffset = document.getElementById('lblOffset');
 const btnToggleSpec = document.getElementById('btnToggleSpec');
 
 let isPlaying = false;
@@ -289,6 +293,8 @@ selSpeed.addEventListener('change', () => {
 
 rngOffset.addEventListener('input', () => {
     syncOffsetMs = parseInt(rngOffset.value);
+    const offsetDisplay = syncOffsetMs - 30000;
+    lblOffset.textContent = `${offsetDisplay > 0 ? '+' : ''}${offsetDisplay} ms`;
     updateCursor(videoPlayer.currentTime * 1000);
 });
 
@@ -762,7 +768,7 @@ async function saveData() {
     const rowData = {
         Timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
         Directory: pair.dirName,
-        Offset_ms: syncOffsetMs,
+        Offset_ms: syncOffsetMs - 30000,
         ...marks,
         Abnormal: document.getElementById('chkAbnormal').checked
     };
