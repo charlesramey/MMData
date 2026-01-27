@@ -6,7 +6,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem, QComboBox, QCheckBox
 )
 from PyQt5.QtGui import QImage, QPixmap, QFont, QPen, QColor
 from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
@@ -343,6 +343,7 @@ class SyncPlayer(QMainWindow):
         self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
         self.marker_btns = {}
         self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
+        self.playback_rate = 1.0
         
         self.central = QWidget()
         self.setCentralWidget(self.central)
@@ -410,7 +411,13 @@ class SyncPlayer(QMainWindow):
         self.offset_slider.setValue(30000)
         self.offset_slider.valueChanged.connect(self.update_offset)
 
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
+        self.speed_combo.currentTextChanged.connect(self.change_speed)
+        self.speed_combo.setFixedWidth(70)
+
         row_play.addWidget(self.play_btn)
+        row_play.addWidget(self.speed_combo)
         row_play.addSpacing(20)
         row_play.addWidget(QLabel("Sync Offset:"))
         row_play.addWidget(self.offset_slider)
@@ -445,7 +452,11 @@ class SyncPlayer(QMainWindow):
         self.save_btn.clicked.connect(self.save_data)
         self.save_btn.setStyleSheet("background-color: #00bcd4; color: #ffffff; font-weight: bold; font-size: 14px; padding: 8px;")
 
+        self.abnormal_cb = QCheckBox("Abnormal")
+        self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
+
         row_act.addStretch()
+        row_act.addWidget(self.abnormal_cb)
         row_act.addWidget(clr_btn)
         row_act.addWidget(self.save_btn)
         ctrls.addLayout(row_act)
@@ -454,6 +465,11 @@ class SyncPlayer(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(33)
+
+    def change_speed(self, text):
+        rate = float(text.replace('x', ''))
+        self.playback_rate = rate
+        self.audio_player.setPlaybackRate(rate)
 
     def create_marker_btn(self, key, text, color_hex):
         btn = QPushButton(text)
@@ -537,10 +553,15 @@ class SyncPlayer(QMainWindow):
                 audio_t = self.audio_player.position()
                 self.video_time_ms = audio_t
 
-                # Check drift
+                # Check drift, but only correct if significant to avoid choppy seek
                 cap_t = self.cap.get(cv2.CAP_PROP_POS_MSEC)
-                if abs(cap_t - audio_t) > 100:
+                drift = audio_t - cap_t
+
+                # If drift is large (> 400ms), seek. Otherwise just grab next frame.
+                if abs(drift) > 400:
                     self.cap.set(cv2.CAP_PROP_POS_MSEC, audio_t)
+                elif drift > 50: # If video is behind, read an extra frame to catch up
+                     self.cap.read()
 
                 ret, frame = self.cap.read()
             else:
@@ -593,11 +614,17 @@ class SyncPlayer(QMainWindow):
 
     def clear_all(self):
         self.marks = {k: None for k in self.marks.keys()}
+        self.abnormal_cb.setChecked(False)
         self.plot.clear_markers()
 
     def save_data(self):
         if self.idx == -1: return
-        log = {'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Directory': os.path.basename(self.dirs[self.idx]), 'Offset_ms': self.offset_ms}
+        log = {
+            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Directory': os.path.basename(self.dirs[self.idx]),
+            'Offset_ms': self.offset_ms,
+            'Abnormal': self.abnormal_cb.isChecked()
+        }
         log.update({f"{k}_ms": v for k, v in self.marks.items()})
         exists = os.path.exists(LOG_FILE)
         with open(LOG_FILE, 'a', newline='') as f:
