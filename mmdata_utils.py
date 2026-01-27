@@ -1,6 +1,13 @@
 import os
 import sys
-from moviepy import VideoFileClip
+try:
+    from moviepy import VideoFileClip
+except ImportError:
+    try:
+        from moviepy.editor import VideoFileClip
+    except ImportError:
+        print("Error: Could not import VideoFileClip from moviepy or moviepy.editor")
+        VideoFileClip = None
 
 def find_video_csv_pair(directory):
     video_file = None
@@ -30,6 +37,10 @@ def ensure_audio_extracted(video_path):
 
     try:
         # Extract audio using moviepy
+        if VideoFileClip is None:
+            print("VideoFileClip not available (moviepy import failed).")
+            return None
+
         clip = VideoFileClip(video_path)
         if clip.audio:
             print(f"Extracting audio for: {os.path.basename(video_path)}")
