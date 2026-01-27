@@ -144,10 +144,6 @@ videoPlayer.addEventListener('timeupdate', () => {
     updateCursor(t_ms);
 });
 
-function updateCursor(t_ms) {
-    drawSpectrogramCursor(t_ms);
-}
-
 // Spectrogram Logic
 let audioCtx = null;
 let specBuffer = null;
