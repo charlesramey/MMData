@@ -29,6 +29,51 @@ DOWNSCALED_VIDEO_PREFIX = 'downscaled_720p_v3_'
 OFFSET_RANGE_MS = 30000 
 VIDEO_SIZE = (620, 440) 
 
+# --- TOOLTIPS ---
+TOOLTIPS = {
+    'jump': {
+        'obs_start': "<b>Jump OBS_START:</b> Last paw leaves the ground for takeoff (should be a rear paw).",
+        'obs_stop': "<b>Jump OBS_STOP:</b> First paw contacts the ground after the jump (should be a front paw).",
+        'stride_start': "<b>Jump STRIDE_START:</b> First front paw contact that initiates the stride before the takeoff stride sequence.<br>(Includes 8 paw strikes before last paw leaves ground).",
+        'stride_stop': "<b>Jump STRIDE_STOP:</b> The last rear paw has left the ground of the stride following the landing stride.<br>(Includes 8 paw strikes from first landing contact)."
+    },
+    'tunnel': {
+        'obs_start': "<b>Tunnel OBS_START:</b> Nose breaks the entry plane of the tunnel opening.",
+        'obs_stop': "<b>Tunnel OBS_STOP:</b> Last paw fully clears the exit plane of the tunnel opening.",
+        'stride_start': "<b>Tunnel STRIDE_START:</b> First paw contact of the stride immediately before CORE_START.",
+        'stride_stop': "<b>Tunnel STRIDE_STOP:</b> Completion of the stride immediately after CORE_STOP (last paw off or next clear contact)."
+    },
+    'teeter': {
+        'obs_start': "<b>Teeter OBS_START:</b> Nose breaks the plane of the teeter entry.",
+        'obs_stop': "<b>Teeter OBS_STOP:</b> Last paw leaves contact with the teeter board.",
+        'stride_start': "<b>Teeter STRIDE_START:</b> First paw contact of the approach stride.",
+        'stride_stop': "<b>Teeter STRIDE_STOP:</b> Completion of the stride after last paw leaves the board (after release)."
+    },
+    'aframe': {
+        'obs_start': "<b>A-frame OBS_START:</b> Nose breaks the entry plane/threshold of the A-frame.",
+        'obs_stop': "<b>A-frame OBS_STOP:</b> Last paw leaves contact with the A-frame.",
+        'stride_start': "<b>A-frame STRIDE_START:</b> First paw contact of the approach stride.",
+        'stride_stop': "<b>A-frame STRIDE_STOP:</b> Completion of the stride after last paw leaves the A-frame."
+    },
+    'dogwalk': {
+        'obs_start': "<b>Dogwalk OBS_START:</b> Nose breaks the entry plane of the dogwalk (start of up plank).",
+        'obs_stop': "<b>Dogwalk OBS_STOP:</b> Last paw leaves contact with the dogwalk.",
+        'stride_start': "<b>Dogwalk STRIDE_START:</b> First paw contact of the approach stride.",
+        'stride_stop': "<b>Dogwalk STRIDE_STOP:</b> Completion of the stride after last paw leaves the dogwalk."
+    },
+    'weave': {
+        'obs_start': "<b>Weave OBS_START:</b> First frame where the dog's nose breaks the plane of pole 1.",
+        'obs_stop': "<b>Weave OBS_STOP:</b> Last paw crosses the plane of the last pole (pole 12).",
+        'stride_start': "<b>Weave STRIDE_START:</b> First paw contact of the stride immediately before OBS_START.",
+        'stride_stop': "<b>Weave STRIDE_STOP:</b> Completion of the stride immediately after OBS_STOP."
+    },
+    'flat': { # Fallback or specific flat definition if needed
+         'obs_start': "Generic OBS_START", 'obs_stop': "Generic OBS_STOP",
+         'stride_start': "Generic STRIDE_START", 'stride_stop': "Generic STRIDE_STOP"
+    }
+}
+# ---------------------
+
 if platform.system() == 'Darwin':  # macOS
     LOG_DIR = os.path.expanduser("~/Documents/DogAgilityLogs")
 else: # Windows/Other
@@ -39,6 +84,56 @@ if not os.path.exists(LOG_DIR):
 
 LOG_FILE = os.path.join(LOG_DIR, 'sync_log.csv')
 # ---------------------
+
+STYLE_SHEET = """
+QMainWindow {
+    background-color: #2b2b2b;
+    color: #ffffff;
+}
+QWidget {
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 14px;
+}
+QLabel {
+    color: #cccccc;
+    font-weight: bold;
+}
+QPushButton {
+    background-color: #3c3f41;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    padding: 6px 12px;
+    color: #ffffff;
+    min-height: 25px;
+}
+QPushButton:hover {
+    background-color: #484b4d;
+    border-color: #666666;
+}
+QPushButton:pressed {
+    background-color: #505355;
+}
+QSlider::groove:horizontal {
+    border: 1px solid #3d3d3d;
+    height: 6px;
+    background: #3d3d3d;
+    margin: 2px 0;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #00bcd4;
+    border: 1px solid #00bcd4;
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}
+QSplitter::handle {
+    background-color: #444444;
+}
+"""
 
 def get_resource_path(relative_path):
     try:
@@ -77,19 +172,22 @@ def find_closest_data_index(df, target_time_ms):
 
 class MatplotlibCanvas(FigureCanvas):
     def __init__(self, parent=None):
+        plt.style.use('dark_background')
         fig, self.ax = plt.subplots(figsize=(6, 4), dpi=100)
+        fig.patch.set_facecolor('#2b2b2b')
+        self.ax.set_facecolor('#1e1e1e')
         super().__init__(fig)
         self.setParent(parent)
         self.reset_marker_objects()
         plt.tight_layout(pad=0.25)
 
     def reset_marker_objects(self):
-        self.point_marker, = self.ax.plot([], [], 'o', color='red', markersize=6, zorder=10)
+        self.point_marker, = self.ax.plot([], [], 'o', color='#ff5252', markersize=6, zorder=10)
         self.m = {
-            'stride_start': (self.ax.axvline(x=np.nan, color='blue', ls='--', alpha=0), self.ax.text(0,0,'',color='blue',fontsize=8,fontweight='bold')),
-            'obs_start': (self.ax.axvline(x=np.nan, color='green', ls=':', alpha=0), self.ax.text(0,0,'',color='green',fontsize=8,fontweight='bold')),
-            'obs_stop': (self.ax.axvline(x=np.nan, color='red', ls=':', alpha=0), self.ax.text(0,0,'',color='red',fontsize=8,fontweight='bold')),
-            'stride_stop': (self.ax.axvline(x=np.nan, color='purple', ls='--', alpha=0), self.ax.text(0,0,'',color='purple',fontsize=8,fontweight='bold'))
+            'stride_start': (self.ax.axvline(x=np.nan, color='#448aff', ls='--', alpha=0), self.ax.text(0,0,'',color='#448aff',fontsize=8,fontweight='bold')),
+            'obs_start': (self.ax.axvline(x=np.nan, color='#69f0ae', ls=':', alpha=0), self.ax.text(0,0,'',color='#69f0ae',fontsize=8,fontweight='bold')),
+            'obs_stop': (self.ax.axvline(x=np.nan, color='#ff5252', ls=':', alpha=0), self.ax.text(0,0,'',color='#ff5252',fontsize=8,fontweight='bold')),
+            'stride_stop': (self.ax.axvline(x=np.nan, color='#e040fb', ls='--', alpha=0), self.ax.text(0,0,'',color='#e040fb',fontsize=8,fontweight='bold'))
         }
 
     def clear_markers(self):
@@ -105,15 +203,22 @@ class MatplotlibCanvas(FigureCanvas):
         fs = 1.0 / np.mean(diffs) if len(diffs) > 0 else 100.0
         self.df['Amag_F'] = apply_lowpass(mag, 5.0, fs)
         self.ax.clear()
-        self.ax.plot(df['Relative_Time_s'], mag, color='lightblue', lw=0.8, alpha=0.4)
-        self.ax.plot(df['Relative_Time_s'], self.df['Amag_F'], color='#003366', lw=1.5, label='Accel (5Hz)')
+        self.ax.set_facecolor('#1e1e1e')
+        self.ax.set_facecolor('#1e1e1e')
+        self.ax.plot(df['Relative_Time_s'], mag, color='#80deea', lw=0.8, alpha=0.3)
+        self.ax.plot(df['Relative_Time_s'], self.df['Amag_F'], color='#00bcd4', lw=1.5, label='Accel (5Hz)')
         if 'Pressure' in df.columns:
             p = apply_lowpass(df['Pressure'].values, 2.0, fs)
             p_s = (p - p.min()) / (p.max() - p.min()) * mag.max() if p.max() > p.min() else p
-            self.ax.plot(df['Relative_Time_s'], p_s, color='orange', lw=1.2, alpha=0.7, label='Pressure')
-        self.ax.grid(True, ls='--', alpha=0.6)
+            self.ax.plot(df['Relative_Time_s'], p_s, color='#ffb74d', lw=1.2, alpha=0.7, label='Pressure')
+        self.ax.tick_params(colors='#e0e0e0')
+        self.ax.xaxis.label.set_color('#e0e0e0')
+        self.ax.yaxis.label.set_color('#e0e0e0')
+        for spine in self.ax.spines.values():
+            spine.set_color('#555555')
+        self.ax.grid(True, ls='--', alpha=0.2, color='#555555')
         self.reset_marker_objects()
-        self.ax.legend(fontsize=7, loc='upper left')
+        self.ax.legend(fontsize=7, loc='upper left', framealpha=0.2, facecolor='#2b2b2b', edgecolor='#555555', labelcolor='white')
         self.draw()
 
     def set_marker(self, key, time_ms, offset_ms):
@@ -227,6 +332,8 @@ class SyncPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dog Agility Sync Tool")
+        self.setStyleSheet(STYLE_SHEET)
+
         self.cap = None
         self.is_playing = False
         self.video_time_ms = 0
@@ -234,23 +341,36 @@ class SyncPlayer(QMainWindow):
         self.idx = -1
         self.dirs = []
         self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
+        self.marker_btns = {}
         self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
         
         self.central = QWidget()
         self.setCentralWidget(self.central)
         layout = QVBoxLayout(self.central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
-        # Header with Next Button restored
-        header = QHBoxLayout()
-        self.file_lbl = QLabel("File: None")
-        dir_btn = QPushButton("Choose Directory")
+        # Top Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+
+        dir_btn = QPushButton("📂 Open Directory")
         dir_btn.clicked.connect(self.choose_directory)
-        self.next_btn = QPushButton("Next File >>")
+        dir_btn.setFixedWidth(140)
+
+        self.file_lbl = QLabel("No File Loaded")
+        self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
+
+        self.next_btn = QPushButton("Next File ⏭")
         self.next_btn.clicked.connect(self.next_file)
-        header.addWidget(self.file_lbl)
-        header.addWidget(dir_btn)
-        header.addWidget(self.next_btn)
-        layout.addLayout(header)
+        self.next_btn.setFixedWidth(120)
+        self.next_btn.setEnabled(False)
+
+        toolbar.addWidget(dir_btn)
+        toolbar.addWidget(self.file_lbl)
+        toolbar.addStretch()
+        toolbar.addWidget(self.next_btn)
+        layout.addLayout(toolbar)
 
         # Splitter (Video & Plot)
         self.splitter = QSplitter(Qt.Vertical)
@@ -277,33 +397,55 @@ class SyncPlayer(QMainWindow):
 
         # Consolidated Controls
         ctrls = QVBoxLayout()
+        ctrls.setSpacing(12)
+
+        # Row 1: Playback & Sync
         row_play = QHBoxLayout()
-        self.play_btn = QPushButton("PLAY")
+        self.play_btn = QPushButton("▶ PLAY")
+        self.play_btn.setFixedWidth(100)
         self.play_btn.clicked.connect(self.toggle_play)
+
         self.offset_slider = QSlider(Qt.Horizontal)
         self.offset_slider.setRange(0, 60000)
         self.offset_slider.setValue(30000)
         self.offset_slider.valueChanged.connect(self.update_offset)
+
         row_play.addWidget(self.play_btn)
+        row_play.addSpacing(20)
         row_play.addWidget(QLabel("Sync Offset:"))
         row_play.addWidget(self.offset_slider)
         ctrls.addLayout(row_play)
 
-        # Single Row for 4 Markers
-        row_marks = QHBoxLayout()
-        for k in self.marks.keys():
-            btn = QPushButton(k.replace('_', ' ').title())
-            btn.clicked.connect(lambda ch, key=k: self.add_mark(key))
-            row_marks.addWidget(btn)
-        ctrls.addLayout(row_marks)
+        # Row 2: Markers (Grid Layout for better look)
+        marker_layout = QHBoxLayout()
+        marker_layout.setSpacing(10)
 
-        # Save/Clear
+        # Stride Buttons
+        self.stride_start_btn = self.create_marker_btn('stride_start', "Stride Start (S)", "#448aff")
+        self.stride_stop_btn = self.create_marker_btn('stride_stop', "Stride Stop (F)", "#e040fb")
+
+        # Obstacle Buttons
+        self.obs_start_btn = self.create_marker_btn('obs_start', "Obstacle Start (D)", "#69f0ae")
+        self.obs_stop_btn = self.create_marker_btn('obs_stop', "Obstacle Stop (G)", "#ff5252")
+
+        marker_layout.addWidget(self.stride_start_btn)
+        marker_layout.addWidget(self.obs_start_btn)
+        marker_layout.addWidget(self.obs_stop_btn)
+        marker_layout.addWidget(self.stride_stop_btn)
+
+        ctrls.addLayout(marker_layout)
+
+        # Row 3: Actions
         row_act = QHBoxLayout()
-        clr_btn = QPushButton("Clear Marks")
+        clr_btn = QPushButton("🗑 Clear Marks")
         clr_btn.clicked.connect(self.clear_all)
-        self.save_btn = QPushButton("Save")
+        clr_btn.setStyleSheet("background-color: #5d4037; border-color: #5d4037;")
+
+        self.save_btn = QPushButton("💾 Save Data")
         self.save_btn.clicked.connect(self.save_data)
-        self.save_btn.setStyleSheet("background-color: #00bcd4; color: white; font-weight: bold;")
+        self.save_btn.setStyleSheet("background-color: #00bcd4; color: #ffffff; font-weight: bold; font-size: 14px; padding: 8px;")
+
+        row_act.addStretch()
         row_act.addWidget(clr_btn)
         row_act.addWidget(self.save_btn)
         ctrls.addLayout(row_act)
@@ -313,6 +455,14 @@ class SyncPlayer(QMainWindow):
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(33)
 
+    def create_marker_btn(self, key, text, color_hex):
+        btn = QPushButton(text)
+        btn.setStyleSheet(f"border-bottom: 3px solid {color_hex}; font-weight: bold;")
+        btn.clicked.connect(lambda: self.add_mark(key))
+        btn.setToolTip("Select a file to see definition")
+        self.marker_btns[key] = btn
+        return btn
+
     def choose_directory(self):
         p = QFileDialog.getExistingDirectory(self, "Select Root")
         if p:
@@ -320,18 +470,40 @@ class SyncPlayer(QMainWindow):
             if self.dirs:
                 self.idx = 0
                 self.load_file(0)
+                self.next_btn.setEnabled(len(self.dirs) > 1)
+
+    def detect_obstacle_type(self, path):
+        path_lower = path.lower()
+        if 'jump' in path_lower: return 'jump'
+        if 'tunnel' in path_lower: return 'tunnel'
+        if 'teeter' in path_lower: return 'teeter'
+        if 'aframe' in path_lower or 'a-frame' in path_lower: return 'aframe'
+        if 'dogwalk' in path_lower: return 'dogwalk'
+        if 'weave' in path_lower: return 'weave'
+        return 'flat'
+
+    def update_tooltips(self, obs_type):
+        tips = TOOLTIPS.get(obs_type, TOOLTIPS['flat'])
+        for key, text in tips.items():
+            if key in self.marker_btns:
+                self.marker_btns[key].setToolTip(text)
 
     def load_file(self, i):
         self.clear_all()
         dir_path = self.dirs[i]
         v, c = find_video_csv_pair(dir_path)
+
+        # Update tooltips based on file name/path
+        obs_type = self.detect_obstacle_type(dir_path)
+        self.update_tooltips(obs_type)
+
         df, _ = load_data(c)
         if df is not None:
             self.plot.update_data(df)
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
             self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
-            self.file_lbl.setText(f"File: {os.path.basename(dir_path)}")
+            self.file_lbl.setText(f"File: {os.path.basename(dir_path)} ({obs_type.upper()})")
 
             audio_path = ensure_audio_extracted(v)
             if audio_path:
@@ -344,12 +516,12 @@ class SyncPlayer(QMainWindow):
 
             self.video_time_ms = 0
             self.is_playing = False
-            self.play_btn.setText("PLAY")
+            self.play_btn.setText("▶ PLAY")
             self.show_frame()
 
     def toggle_play(self):
         self.is_playing = not self.is_playing
-        self.play_btn.setText("PAUSE" if self.is_playing else "PLAY")
+        self.play_btn.setText("⏸ PAUSE" if self.is_playing else "▶ PLAY")
         if self.is_playing:
             self.audio_player.play()
         else:
@@ -383,7 +555,7 @@ class SyncPlayer(QMainWindow):
                 self.spectrogram.update_cursor(self.video_time_ms)
             else:
                 self.is_playing = False
-                self.play_btn.setText("PLAY")
+                self.play_btn.setText("▶ PLAY")
                 self.audio_player.pause()
 
     def scrub_video(self, val):
