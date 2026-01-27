@@ -20,11 +20,19 @@
         </header>
 
         <div id="main-content">
-            <div id="video-container">
+            <div id="video-container" class="panel">
                 <video id="videoPlayer" controls></video>
+            </div>
+
+            <div class="splitter" id="split-1"></div>
+
+            <div id="spectrogram-container" class="panel">
                 <canvas id="spectrogramCanvas"></canvas>
             </div>
-            <div id="sensor-container">
+
+            <div class="splitter" id="split-2"></div>
+
+            <div id="sensor-container" class="panel">
                 <canvas id="sensorCanvas"></canvas>
             </div>
         </div>

@@ -4,6 +4,7 @@ let rootHandle = null;
 let filePairs = [];
 let currentIdx = -1;
 let syncLogHandle = null;
+let globalAudioBuffer = null;
 
 // DOM Elements
 const btnOpenDir = document.getElementById('btnOpenDir');
@@ -12,6 +13,9 @@ const lblCurrentFile = document.getElementById('lblCurrentFile');
 const fileInput = document.getElementById('fileInput');
 
 // Setup
+setupSplitters();
+setupResizeObserver();
+
 btnOpenDir.addEventListener('click', async () => {
     if ('showDirectoryPicker' in window) {
         try {
@@ -157,6 +161,71 @@ function detectObstacle(path) {
     return 'FLAT';
 }
 
+// Splitter & Layout Logic
+function setupSplitters() {
+    const splitters = document.querySelectorAll('.splitter');
+    splitters.forEach(splitter => {
+        splitter.addEventListener('mousedown', initDrag);
+    });
+
+    function initDrag(e) {
+        const splitter = e.target;
+        const prev = splitter.previousElementSibling;
+        const next = splitter.nextElementSibling;
+
+        // Disable flex to use fixed pixel heights during drag
+        const prevH = prev.offsetHeight;
+        const nextH = next.offsetHeight;
+
+        // Lock heights
+        prev.style.flex = 'none';
+        next.style.flex = 'none';
+        prev.style.height = prevH + 'px';
+        next.style.height = nextH + 'px';
+
+        const startY = e.clientY;
+
+        splitter.classList.add('active');
+        document.body.style.cursor = 'row-resize';
+
+        function onMouseMove(e) {
+            const dy = e.clientY - startY;
+            const newPrevH = prevH + dy;
+            const newNextH = nextH - dy;
+
+            // Min height constraint (e.g. 50px)
+            if (newPrevH > 50 && newNextH > 50) {
+                prev.style.height = newPrevH + 'px';
+                next.style.height = newNextH + 'px';
+            }
+        }
+
+        function onMouseUp() {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            splitter.classList.remove('active');
+            document.body.style.cursor = 'default';
+
+            // Ensure Chart resizes if involved
+            if (sensorChart) sensorChart.resize();
+        }
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    }
+}
+
+function setupResizeObserver() {
+    const container = document.getElementById('spectrogram-container');
+    const resizeObserver = new ResizeObserver(entries => {
+        if (globalAudioBuffer) {
+            // Debounce or just request frame
+            requestAnimationFrame(() => drawSpectrogram(globalAudioBuffer));
+        }
+    });
+    resizeObserver.observe(container);
+}
+
 // Playback Logic
 const videoPlayer = document.getElementById('videoPlayer');
 const btnPlay = document.getElementById('btnPlay');
@@ -195,8 +264,19 @@ videoPlayer.addEventListener('timeupdate', () => {
 if (btnToggleSpec) {
     btnToggleSpec.addEventListener('click', () => {
         showSpectrogram = !showSpectrogram;
-        const canvas = document.getElementById('spectrogramCanvas');
-        canvas.style.display = showSpectrogram ? 'block' : 'none';
+        const container = document.getElementById('spectrogram-container');
+        const split1 = document.getElementById('split-1'); // The splitter above it
+
+        if (showSpectrogram) {
+            container.style.display = 'flex';
+            split1.style.display = 'block';
+        } else {
+            container.style.display = 'none';
+            split1.style.display = 'none';
+        }
+
+        // Trigger resize for neighbors
+        if (sensorChart) setTimeout(() => sensorChart.resize(), 50);
     });
 }
 
@@ -204,7 +284,7 @@ if (btnToggleSpec) {
 let audioCtx = null;
 let specBuffer = null;
 const specCanvas = document.getElementById('spectrogramCanvas');
-const specCtx = specCanvas.getContext('2d');
+const specCtx = specCanvas.getContext('2d', { willReadFrequently: true });
 
 async function setupSpectrogram(file) {
     try {
@@ -212,10 +292,13 @@ async function setupSpectrogram(file) {
         const arrayBuffer = await file.arrayBuffer();
         const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
+        globalAudioBuffer = audioBuffer;
+
         // Draw Spectrogram
         drawSpectrogram(audioBuffer);
     } catch (e) {
         console.error("Audio processing failed", e);
+        globalAudioBuffer = null;
     }
 }
 
@@ -269,9 +352,14 @@ function fft(real, imag) {
 }
 
 function drawSpectrogram(buffer) {
+    if (!buffer) return;
+
     // Set canvas internal size to match display size for sharpness
     const displayWidth = specCanvas.clientWidth || 800;
     const displayHeight = specCanvas.clientHeight || 150;
+
+    // Avoid redrawing if dimensions haven't changed substantially?
+    // No, we must redraw if size changes.
     specCanvas.width = displayWidth;
     specCanvas.height = displayHeight;
 
@@ -458,6 +546,10 @@ function processCSV(text) {
     let magAccel = calculateMagnitude(ax, ay, az);
     let magGyro = hasGyro ? calculateMagnitude(gx, gy, gz) : [];
 
+    // Normalize Raw
+    let normAccelRaw = normalizeData(magAccel);
+    let normGyroRaw = hasGyro ? normalizeData(magGyro) : [];
+
     const cutoff = 5;
     let magAccelLPF = lowPassFilter(magAccel, fs, cutoff);
     let magGyroLPF = hasGyro ? lowPassFilter(magGyro, fs, cutoff) : [];
@@ -469,25 +561,49 @@ function processCSV(text) {
 
     const datasets = [
         {
+            label: 'Accel Mag (Raw)',
+            data: normAccelRaw,
+            borderColor: '#00bcd4',
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1,
+            borderDash: [3, 3],
+            order: 2
+        },
+        {
             label: 'Accel Mag (5Hz LPF)',
             data: normAccel,
             borderColor: '#00bcd4',
-            borderWidth: 1.5,
+            borderWidth: 2,
             pointRadius: 0,
             fill: false,
-            tension: 0.1
+            tension: 0.1,
+            order: 1
         }
     ];
 
     if (hasGyro) {
         datasets.push({
+            label: 'Gyro Mag (Raw)',
+            data: normGyroRaw,
+            borderColor: '#ff4081',
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1,
+            borderDash: [3, 3],
+            order: 2
+        });
+        datasets.push({
             label: 'Gyro Mag (5Hz LPF)',
             data: normGyro,
             borderColor: '#ff4081',
-            borderWidth: 1.5,
+            borderWidth: 2,
             pointRadius: 0,
             fill: false,
-            tension: 0.1
+            tension: 0.1,
+            order: 1
         });
     }
 

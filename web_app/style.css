@@ -16,6 +16,7 @@ header {
     align-items: center;
     gap: 20px;
     border-bottom: 1px solid #444;
+    flex: 0 0 auto;
 }
 
 h1 { margin: 0; font-size: 1.2rem; color: #00bcd4; }
@@ -36,40 +37,69 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     flex: 1;
     display: flex;
     flex-direction: column;
-    padding: 10px;
-    gap: 10px;
+    padding: 5px;
+    overflow: hidden;
+    background: #111;
+}
+
+.panel {
+    min-height: 50px;
+    position: relative;
     overflow: hidden;
 }
 
 #video-container {
-    flex: 2;
+    flex: 4; /* Higher weight for video */
     background: black;
     display: flex;
     flex-direction: column;
-    position: relative;
     justify-content: center;
     align-items: center;
 }
 
 video {
     max-width: 100%;
-    max-height: 70%;
+    max-height: 100%;
+}
+
+#spectrogram-container {
+    flex: 1;
+    background: #000;
+    display: flex;
+    flex-direction: column;
 }
 
 #spectrogramCanvas {
     width: 100%;
-    height: 150px;
-    background: #000;
-    margin-top: 5px;
+    height: 100%;
+    display: block;
 }
 
 #sensor-container {
-    flex: 1;
+    flex: 2;
     background: #1e1e1e;
-    position: relative;
+}
+
+#sensorCanvas {
+    width: 100%;
+    height: 100%;
+}
+
+/* Splitter Styling */
+.splitter {
+    height: 6px;
+    background: #333;
+    cursor: row-resize;
+    flex: 0 0 6px;
+    transition: background 0.2s;
+}
+
+.splitter:hover, .splitter.active {
+    background: #00bcd4;
 }
 
 #controls {
+    flex: 0 0 auto;
     background-color: #1e1e1e;
     padding: 15px;
     display: flex;
