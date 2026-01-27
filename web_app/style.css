@@ -1,3 +1,7 @@
+* {
+    box-sizing: border-box;
+}
+
 body {
     background-color: #2b2b2b;
     color: #ffffff;
@@ -46,10 +50,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     min-height: 50px;
     position: relative;
     overflow: hidden;
+    /* Default flex behavior */
+    flex: 1 1 auto;
 }
 
 #video-container {
-    flex: 4; /* Higher weight for video */
+    flex: 4 1 auto; /* Higher weight for video */
     background: black;
     display: flex;
     flex-direction: column;
@@ -63,7 +69,7 @@ video {
 }
 
 #spectrogram-container {
-    flex: 1;
+    flex: 1 1 auto;
     background: #000;
     display: flex;
     flex-direction: column;
@@ -76,7 +82,7 @@ video {
 }
 
 #sensor-container {
-    flex: 2;
+    flex: 2 1 auto;
     background: #1e1e1e;
 }
 
@@ -87,10 +93,11 @@ video {
 
 /* Splitter Styling */
 .splitter {
-    height: 6px;
+    height: 8px; /* Slightly larger target */
     background: #333;
     cursor: row-resize;
-    flex: 0 0 6px;
+    flex: 0 0 8px;
+    z-index: 10;
     transition: background 0.2s;
 }
 

@@ -12,6 +12,38 @@ const btnNextFile = document.getElementById('btnNextFile');
 const lblCurrentFile = document.getElementById('lblCurrentFile');
 const fileInput = document.getElementById('fileInput');
 
+// Playhead Plugin for Chart.js
+const playheadPlugin = {
+    id: 'playhead',
+    afterDatasetsDraw: (chart) => {
+        if (!videoPlayer) return;
+        const currentTime = videoPlayer.currentTime; // seconds
+
+        // Ensure x scale exists
+        if (!chart.scales.x) return;
+
+        const x = chart.scales.x.getPixelForValue(currentTime);
+
+        // Ensure x is within chart area
+        const area = chart.chartArea;
+        if (x < area.left || x > area.right) return;
+
+        const ctx = chart.ctx;
+        const top = area.top;
+        const bottom = area.bottom;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'white';
+        ctx.setLineDash([]);
+        ctx.stroke();
+        ctx.restore();
+    }
+};
+
 // Setup
 setupSplitters();
 setupResizeObserver();
@@ -169,34 +201,38 @@ function setupSplitters() {
     });
 
     function initDrag(e) {
+        e.preventDefault();
         const splitter = e.target;
         const prev = splitter.previousElementSibling;
         const next = splitter.nextElementSibling;
 
-        // Disable flex to use fixed pixel heights during drag
-        const prevH = prev.offsetHeight;
-        const nextH = next.offsetHeight;
+        if (!prev || !next) return;
 
-        // Lock heights
-        prev.style.flex = 'none';
-        next.style.flex = 'none';
-        prev.style.height = prevH + 'px';
-        next.style.height = nextH + 'px';
-
+        // Get initial heights
+        const prevRect = prev.getBoundingClientRect();
+        const nextRect = next.getBoundingClientRect();
+        const startH = prevRect.height;
+        const nextH = nextRect.height;
         const startY = e.clientY;
+
+        // Switch to fixed sizing (flex-basis) to control precise pixels
+        // flex: 0 0 basis
+        prev.style.flex = `0 0 ${startH}px`;
+        next.style.flex = `0 0 ${nextH}px`;
 
         splitter.classList.add('active');
         document.body.style.cursor = 'row-resize';
 
         function onMouseMove(e) {
+            e.preventDefault();
             const dy = e.clientY - startY;
-            const newPrevH = prevH + dy;
+            const newPrevH = startH + dy;
             const newNextH = nextH - dy;
 
             // Min height constraint (e.g. 50px)
             if (newPrevH > 50 && newNextH > 50) {
-                prev.style.height = newPrevH + 'px';
-                next.style.height = newNextH + 'px';
+                prev.style.flexBasis = `${newPrevH}px`;
+                next.style.flexBasis = `${newNextH}px`;
             }
         }
 
@@ -358,8 +394,6 @@ function drawSpectrogram(buffer) {
     const displayWidth = specCanvas.clientWidth || 800;
     const displayHeight = specCanvas.clientHeight || 150;
 
-    // Avoid redrawing if dimensions haven't changed substantially?
-    // No, we must redraw if size changes.
     specCanvas.width = displayWidth;
     specCanvas.height = displayHeight;
 
@@ -641,12 +675,17 @@ function processCSV(text) {
                     intersect: false
                 }
             }
-        }
+        },
+        plugins: [playheadPlugin]
     });
 }
 
 function updateCursor(t_ms) {
     drawSpectrogramCursor(t_ms);
+    // Trigger Chart Playhead Update
+    if (sensorChart) {
+        sensorChart.update('none'); // Efficient update without full animation
+    }
 }
 
 function drawSpectrogramCursor(t_ms) {
