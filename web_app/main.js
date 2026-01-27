@@ -9,32 +9,47 @@ let syncLogHandle = null;
 const btnOpenDir = document.getElementById('btnOpenDir');
 const btnNextFile = document.getElementById('btnNextFile');
 const lblCurrentFile = document.getElementById('lblCurrentFile');
+const fileInput = document.getElementById('fileInput');
 
 // Setup
 btnOpenDir.addEventListener('click', async () => {
-    try {
-        rootHandle = await window.showDirectoryPicker();
-        filePairs = [];
-        await scanDirectory(rootHandle);
-        filePairs.sort((a, b) => a.dirName.localeCompare(b.dirName));
-
-        if (filePairs.length > 0) {
-            currentIdx = 0;
-            // Try to find or create sync_log.csv in root
-            try {
-                syncLogHandle = await rootHandle.getFileHandle('sync_log.csv', { create: true });
-            } catch (e) {
-                console.warn("Could not access sync_log.csv", e);
-            }
-            loadFile(currentIdx);
-            btnNextFile.disabled = filePairs.length <= 1;
-        } else {
-            alert("No video/CSV pairs found.");
+    if ('showDirectoryPicker' in window) {
+        try {
+            rootHandle = await window.showDirectoryPicker();
+            filePairs = [];
+            await scanDirectory(rootHandle);
+            finishScan();
+        } catch (err) {
+            console.error("Error opening directory:", err);
         }
-    } catch (err) {
-        console.error("Error opening directory:", err);
+    } else {
+        // Fallback
+        fileInput.click();
     }
 });
+
+fileInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files);
+    filePairs = scanFileList(files);
+    finishScan();
+});
+
+function finishScan() {
+    filePairs.sort((a, b) => a.dirName.localeCompare(b.dirName));
+    if (filePairs.length > 0) {
+        currentIdx = 0;
+        // In fallback mode, syncLogHandle remains null
+        if (rootHandle) {
+            rootHandle.getFileHandle('sync_log.csv', { create: true })
+                .then(h => syncLogHandle = h)
+                .catch(e => console.warn("Could not access sync_log.csv", e));
+        }
+        loadFile(currentIdx);
+        btnNextFile.disabled = filePairs.length <= 1;
+    } else {
+        alert("No video/CSV pairs found.");
+    }
+}
 
 btnNextFile.addEventListener('click', () => {
     if (currentIdx < filePairs.length - 1) {
@@ -45,13 +60,10 @@ btnNextFile.addEventListener('click', () => {
     }
 });
 
+// Native FS API Scan
 async function scanDirectory(dirHandle, path = "") {
     let videoHandle = null;
     let csvHandle = null;
-
-    // We need to iterate entries.
-    // Note: This is a simplified recursive scan.
-    // In a real app we might need to handle depth limits or large trees carefully.
 
     for await (const entry of dirHandle.values()) {
         if (entry.kind === 'file') {
@@ -67,13 +79,48 @@ async function scanDirectory(dirHandle, path = "") {
     }
 
     if (videoHandle && csvHandle) {
+        // Wrapper for getFile()
         filePairs.push({
             dirName: dirHandle.name,
-            video: videoHandle,
-            csv: csvHandle,
+            video: { getFile: () => videoHandle.getFile() },
+            csv: { getFile: () => csvHandle.getFile() },
             path: path
         });
     }
+}
+
+// Input Element Scan
+function scanFileList(files) {
+    const pairs = [];
+    const dirs = {};
+
+    // Group by directory path
+    files.forEach(f => {
+        const path = f.webkitRelativePath || f.name;
+        const parts = path.split('/');
+        const dirPath = parts.slice(0, -1).join('/');
+        const dirName = parts.length > 1 ? parts[parts.length - 2] : 'root';
+
+        if (!dirs[dirPath]) dirs[dirPath] = { video: null, csv: null, dirName: dirName };
+
+        const name = f.name.toLowerCase();
+        if (name.endsWith('.mp4') || name.endsWith('.avi') || name.endsWith('.mov')) {
+            dirs[dirPath].video = f;
+        } else if (name.endsWith('.csv') && name !== 'sync_log.csv') {
+            dirs[dirPath].csv = f;
+        }
+    });
+
+    for (const d of Object.values(dirs)) {
+        if (d.video && d.csv) {
+            pairs.push({
+                dirName: d.dirName,
+                video: { getFile: async () => d.video },
+                csv: { getFile: async () => d.csv }
+            });
+        }
+    }
+    return pairs;
 }
 
 async function loadFile(idx) {
@@ -309,8 +356,8 @@ function clearMarks() {
 }
 
 async function saveData() {
-    if (currentIdx === -1 || !syncLogHandle) {
-        alert("No file loaded or log file inaccessible.");
+    if (currentIdx === -1) {
+        alert("No file loaded.");
         return;
     }
 
@@ -323,25 +370,34 @@ async function saveData() {
         Abnormal: document.getElementById('chkAbnormal').checked
     };
 
-    // Convert to CSV line
-    // Simple implementation: assumes headers exist or we append blindly.
-    // Real app needs to check headers.
     const values = Object.values(rowData).map(v => v === null ? '' : v);
     const line = values.join(',') + '\n';
 
-    try {
-        const writable = await syncLogHandle.createWritable({ keepExistingData: true });
-        // The File System Access API 'createWritable' typically overwrites or requires seeking.
-        // For appending, we usually need to read size or use 'seek' if supported by the browser implementation.
-        // Simplified for PoC:
-        const file = await syncLogHandle.getFile();
-        const size = file.size;
-        await writable.write({ type: 'write', position: size, data: line });
-        await writable.close();
-        alert("Saved!");
+    if (syncLogHandle) {
+        // Use File System Access API
+        try {
+            const writable = await syncLogHandle.createWritable({ keepExistingData: true });
+            const file = await syncLogHandle.getFile();
+            const size = file.size;
+            await writable.write({ type: 'write', position: size, data: line });
+            await writable.close();
+            alert("Saved!");
+            btnNextFile.click();
+        } catch (e) {
+            console.error("Save failed", e);
+            alert("Save failed: " + e.message);
+        }
+    } else {
+        // Fallback: Download the line as a snippet or full CSV (simplified to alert download)
+        // In a real scenario, we'd append to a memory buffer and download the full log at the end.
+        const blob = new Blob([line], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sync_log_entry_${pair.dirName}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        alert("Log entry downloaded (Fallback Mode).");
         btnNextFile.click();
-    } catch (e) {
-        console.error("Save failed", e);
-        alert("Save failed: " + e.message);
     }
 }
