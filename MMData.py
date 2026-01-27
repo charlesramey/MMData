@@ -343,7 +343,7 @@ class SyncPlayer(QMainWindow):
         self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
         self.marker_btns = {}
         self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
-        self.playback_rate = 1.0
+        self.playback_rate = 0.25
         
         self.central = QWidget()
         self.setCentralWidget(self.central)
@@ -413,6 +413,7 @@ class SyncPlayer(QMainWindow):
 
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
+        self.speed_combo.setCurrentText("0.25x")
         self.speed_combo.currentTextChanged.connect(self.change_speed)
         self.speed_combo.setFixedWidth(70)
 
@@ -455,7 +456,13 @@ class SyncPlayer(QMainWindow):
         self.abnormal_cb = QCheckBox("Abnormal")
         self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
 
+        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
+        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
+        self.toggle_spec_btn.setCheckable(True)
+        self.toggle_spec_btn.setChecked(True)
+
         row_act.addStretch()
+        row_act.addWidget(self.toggle_spec_btn)
         row_act.addWidget(self.abnormal_cb)
         row_act.addWidget(clr_btn)
         row_act.addWidget(self.save_btn)
@@ -465,6 +472,10 @@ class SyncPlayer(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(33)
+        self.audio_player.setPlaybackRate(self.playback_rate)
+
+        # Enforce initial visibility state
+        self.toggle_spectrogram()
 
     def change_speed(self, text):
         rate = float(text.replace('x', ''))
@@ -542,6 +553,9 @@ class SyncPlayer(QMainWindow):
             self.audio_player.play()
         else:
             self.audio_player.pause()
+
+    def toggle_spectrogram(self):
+        self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
 
     def update_frame(self):
         if self.is_playing and self.cap:
