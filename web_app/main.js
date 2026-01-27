@@ -404,6 +404,21 @@ function drawSpectrogram(buffer) {
     // Parameters
     const fftSize = 512; // Frequency resolution (256 bins)
 
+    // Limits
+    const sampleRate = buffer.sampleRate; // e.g., 44100 or 48000
+    const nyquist = sampleRate / 2;
+    const maxFreq = 10000; // Cap at 10kHz
+
+    // Calculate how many bins cover 0 to maxFreq
+    // Bin resolution = sampleRate / fftSize
+    // Index = freq / (sampleRate / fftSize)
+    const binResolution = sampleRate / fftSize;
+    const maxBinIndex = Math.floor(maxFreq / binResolution);
+
+    // Total bins to check (limit by maxFreq or Nyquist)
+    const totalBins = fftSize / 2;
+    const binsToDraw = Math.min(maxBinIndex, totalBins);
+
     // Draw background
     specCtx.fillStyle = 'black';
     specCtx.fillRect(0, 0, canvasWidth, canvasHeight);
@@ -435,12 +450,17 @@ function drawSpectrogram(buffer) {
         fft(real, imag);
 
         // Compute Magnitude & Draw
-        const bins = fftSize / 2;
 
         for (let y = 0; y < canvasHeight; y++) {
-            // Map y (0 is top) to frequency bin (0 is DC)
-            const binIdx = Math.floor((1 - (y / canvasHeight)) * bins);
-            if (binIdx < 0 || binIdx >= bins) continue;
+            // Map y (0 is top = maxFreq) to frequency bin (0 is DC)
+            // Normal mapping: y=0 -> Nyquist
+            // New mapping: y=0 -> maxFreq (10kHz)
+
+            // Invert y: y=0 is top, y=height is bottom (0Hz)
+            const normalizedY = 1 - (y / canvasHeight); // 0 to 1 (0Hz to MaxFreq)
+            const binIdx = Math.floor(normalizedY * binsToDraw);
+
+            if (binIdx < 0 || binIdx >= binsToDraw) continue;
 
             const mag = Math.sqrt(real[binIdx]**2 + imag[binIdx]**2);
             // Log scale for magnitude
