@@ -22,7 +22,7 @@ from scipy.io import wavfile
 import matplotlib.cm as cm
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtCore import QUrl
-from moviepy import VideoFileClip
+from mmdata_utils import find_video_csv_pair, ensure_audio_extracted
 
 # --- CONFIGURATION ---
 DOWNSCALED_VIDEO_PREFIX = 'downscaled_720p_v3_'
@@ -54,47 +54,6 @@ def apply_lowpass(data, cutoff, fs, order=4):
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
     y = filtfilt(b, a, data)
     return y
-
-def find_video_csv_pair(directory):
-    video_file = None
-    csv_file = None
-    for item in os.listdir(directory):
-        full_path = os.path.join(directory, item)
-        if os.path.isfile(full_path):
-            if item.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')) and video_file is None:
-                video_file = full_path
-            elif item.lower().endswith('.csv') and csv_file is None:
-                csv_file = full_path
-            if video_file and csv_file:
-                break
-    return video_file, csv_file
-
-def ensure_audio_extracted(video_path):
-    """
-    Checks if a .wav file exists for the given video path.
-    If not, extracts audio from the video and saves it as .wav.
-    Returns the path to the audio file, or None if extraction fails.
-    """
-    base_name = os.path.splitext(video_path)[0]
-    audio_path = base_name + ".wav"
-
-    if os.path.exists(audio_path):
-        return audio_path
-
-    try:
-        # Extract audio using moviepy
-        clip = VideoFileClip(video_path)
-        if clip.audio:
-            clip.audio.write_audiofile(audio_path, logger=None)
-            clip.close()
-            return audio_path
-        else:
-            clip.close()
-            print(f"No audio stream found in {video_path}")
-            return None
-    except Exception as e:
-        print(f"Error extracting audio from {video_path}: {e}")
-        return None
 
 def load_data(csv_path):
     try:
