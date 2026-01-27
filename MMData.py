@@ -5,9 +5,10 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter
+    QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter,
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem
 )
-from PyQt5.QtGui import QImage, QPixmap, QFont
+from PyQt5.QtGui import QImage, QPixmap, QFont, QPen, QColor
 from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
 import sys
 import subprocess
@@ -16,7 +17,12 @@ import csv
 import platform  
 import time      
 from datetime import datetime
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, filtfilt, spectrogram
+from scipy.io import wavfile
+import matplotlib.cm as cm
+from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+from PyQt5.QtCore import QUrl
+from moviepy import VideoFileClip
 
 # --- CONFIGURATION ---
 DOWNSCALED_VIDEO_PREFIX = 'downscaled_720p_v3_'
@@ -62,6 +68,33 @@ def find_video_csv_pair(directory):
             if video_file and csv_file:
                 break
     return video_file, csv_file
+
+def ensure_audio_extracted(video_path):
+    """
+    Checks if a .wav file exists for the given video path.
+    If not, extracts audio from the video and saves it as .wav.
+    Returns the path to the audio file, or None if extraction fails.
+    """
+    base_name = os.path.splitext(video_path)[0]
+    audio_path = base_name + ".wav"
+
+    if os.path.exists(audio_path):
+        return audio_path
+
+    try:
+        # Extract audio using moviepy
+        clip = VideoFileClip(video_path)
+        if clip.audio:
+            clip.audio.write_audiofile(audio_path, logger=None)
+            clip.close()
+            return audio_path
+        else:
+            clip.close()
+            print(f"No audio stream found in {video_path}")
+            return None
+    except Exception as e:
+        print(f"Error extracting audio from {video_path}: {e}")
+        return None
 
 def load_data(csv_path):
     try:
@@ -137,6 +170,100 @@ class MatplotlibCanvas(FigureCanvas):
         self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F']])
         self.draw()
 
+class SpectrogramCanvas(QGraphicsView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self.cursor_line = None
+        self.pixmap_item = None
+
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFixedHeight(150)
+
+        self.px_per_s = 1.0
+        self.t_min = 0.0
+        self.t_max = 1.0
+        self.spectrogram_data = None
+
+    def update_data(self, audio_path):
+        self.scene.clear()
+        self.cursor_line = None
+        self.spectrogram_data = None
+
+        if not audio_path or not os.path.exists(audio_path):
+             self.scene.addText("No Audio")
+             return
+
+        try:
+            fs, data = wavfile.read(audio_path)
+            if len(data.shape) > 1: data = data.mean(axis=1)
+
+            f, t, Sxx = spectrogram(data, fs, nperseg=1024, noverlap=512)
+            Sxx = 10 * np.log10(Sxx + 1e-10)
+
+            vmin, vmax = Sxx.min(), Sxx.max()
+            Sxx_norm = (Sxx - vmin) / (vmax - vmin)
+
+            rgba = cm.inferno(Sxx_norm)
+            rgba = (rgba * 255).astype(np.uint8)
+            rgba = np.flipud(rgba).copy()
+
+            h, w, ch = rgba.shape
+            bytes_per_line = ch * w
+
+            self.spectrogram_data = rgba
+
+            qimg = QImage(self.spectrogram_data.data, w, h, bytes_per_line, QImage.Format_RGBA8888)
+            pixmap = QPixmap.fromImage(qimg)
+
+            self.pixmap_item = self.scene.addPixmap(pixmap)
+
+            pen = QPen(QColor(255, 255, 255))
+            pen.setWidth(2)
+            self.cursor_line = self.scene.addLine(0, 0, 0, h, pen)
+            self.cursor_line.setZValue(10)
+
+            self.t_min = t[0]
+            self.t_max = t[-1]
+            duration_s = self.t_max - self.t_min
+
+            self.px_per_s = w / duration_s if duration_s > 0 else 1.0
+
+            self.setSceneRect(0, 0, w, h)
+
+            if self.viewport().height() > 0:
+                scale_y = self.viewport().height() / h
+                self.resetTransform()
+                self.scale(1.0, scale_y)
+
+        except Exception as e:
+            print(f"Error computing spectrogram: {e}")
+            self.scene.addText(f"Error: {e}")
+
+    def update_cursor(self, t_ms):
+        if not self.cursor_line: return
+        t_s = t_ms / 1000.0
+
+        if t_s < self.t_min: x = 0
+        elif t_s > self.t_max: x = (self.t_max - self.t_min) * self.px_per_s
+        else: x = (t_s - self.t_min) * self.px_per_s
+
+        h = self.scene.height()
+        self.cursor_line.setLine(x, 0, x, h)
+        self.centerOn(x, h/2)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.scene.height() > 0:
+            scale_y = self.viewport().height() / self.scene.height()
+            self.resetTransform()
+            self.scale(1.0, scale_y)
+            if self.cursor_line:
+                 x = self.cursor_line.line().x1()
+                 self.centerOn(x, self.scene.height()/2)
+
 class SyncPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -148,6 +275,7 @@ class SyncPlayer(QMainWindow):
         self.idx = -1
         self.dirs = []
         self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
+        self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
         
         self.central = QWidget()
         self.setCentralWidget(self.central)
@@ -171,8 +299,12 @@ class SyncPlayer(QMainWindow):
         self.video_lbl.setStyleSheet("background-color: black;")
         self.video_lbl.setAlignment(Qt.AlignCenter)
         self.video_lbl.setMinimumSize(400, 300)
+
+        self.spectrogram = SpectrogramCanvas(self)
         self.plot = MatplotlibCanvas(self)
+
         self.splitter.addWidget(self.video_lbl)
+        self.splitter.addWidget(self.spectrogram)
         self.splitter.addWidget(self.plot)
         layout.addWidget(self.splitter)
 
@@ -241,6 +373,16 @@ class SyncPlayer(QMainWindow):
             self.cap = cv2.VideoCapture(v)
             self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
             self.file_lbl.setText(f"File: {os.path.basename(dir_path)}")
+
+            audio_path = ensure_audio_extracted(v)
+            if audio_path:
+                self.spectrogram.update_data(audio_path)
+                url = QUrl.fromLocalFile(os.path.abspath(audio_path))
+                self.audio_player.setMedia(QMediaContent(url))
+            else:
+                self.spectrogram.update_data(None)
+                self.audio_player.setMedia(QMediaContent())
+
             self.video_time_ms = 0
             self.is_playing = False
             self.play_btn.setText("PLAY")
@@ -249,18 +391,41 @@ class SyncPlayer(QMainWindow):
     def toggle_play(self):
         self.is_playing = not self.is_playing
         self.play_btn.setText("PAUSE" if self.is_playing else "PLAY")
+        if self.is_playing:
+            self.audio_player.play()
+        else:
+            self.audio_player.pause()
 
     def update_frame(self):
         if self.is_playing and self.cap:
-            ret, frame = self.cap.read()
+            has_audio = not self.audio_player.media().isNull()
+            ret = False
+            frame = None
+
+            if has_audio and self.audio_player.state() == QMediaPlayer.PlayingState:
+                audio_t = self.audio_player.position()
+                self.video_time_ms = audio_t
+
+                # Check drift
+                cap_t = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+                if abs(cap_t - audio_t) > 100:
+                    self.cap.set(cv2.CAP_PROP_POS_MSEC, audio_t)
+
+                ret, frame = self.cap.read()
+            else:
+                ret, frame = self.cap.read()
+                if ret:
+                    self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+
             if ret:
-                self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
                 self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
                 self.display_img(frame)
                 self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
             else:
                 self.is_playing = False
                 self.play_btn.setText("PLAY")
+                self.audio_player.pause()
 
     def scrub_video(self, val):
         if self.cap:
@@ -268,14 +433,18 @@ class SyncPlayer(QMainWindow):
             ret, frame = self.cap.read()
             if ret:
                 self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                self.audio_player.setPosition(self.video_time_ms)
                 self.display_img(frame)
                 self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
 
     def show_frame(self):
         if self.cap:
             self.cap.set(cv2.CAP_PROP_POS_MSEC, self.video_time_ms)
             ret, frame = self.cap.read()
-            if ret: self.display_img(frame)
+            if ret:
+                self.display_img(frame)
+                self.spectrogram.update_cursor(self.video_time_ms)
 
     def display_img(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
