@@ -73,7 +73,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 #video-container {
-    flex: 4 1 auto; /* Higher weight for video */
+    flex: 5 1 auto; /* Higher weight for video */
     background: black;
     display: flex;
     flex-direction: column;
@@ -104,7 +104,7 @@ video {
 }
 
 #sensor-container {
-    flex: 2 1 auto;
+    flex: 3 1 auto;
     background: #1e1e1e;
 }
 
