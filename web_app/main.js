@@ -607,6 +607,7 @@ function processCSV(text) {
 
     const headers = Object.keys(data[0]);
     const hasGyro = headers.includes('Gx') && headers.includes('Gy') && headers.includes('Gz');
+    const hasPressure = headers.includes('Pressure');
 
     const timestamps = data.map(r => r.Timestamp);
     const t0 = timestamps[0];
@@ -633,6 +634,11 @@ function processCSV(text) {
         gz = data.map(r => r.Gz || 0);
     }
 
+    let pressure = [];
+    if (hasPressure) {
+        pressure = data.map(r => r.Pressure || 0);
+    }
+
     let magAccel = calculateMagnitude(ax, ay, az);
     let magGyro = hasGyro ? calculateMagnitude(gx, gy, gz) : [];
 
@@ -644,8 +650,14 @@ function processCSV(text) {
     let magAccelLPF = lowPassFilter(magAccel, fs, cutoff);
     let magGyroLPF = hasGyro ? lowPassFilter(magGyro, fs, cutoff) : [];
 
+    let pressureLPF = [];
+    if (hasPressure) {
+        pressureLPF = lowPassFilter(pressure, fs, 2.0); // 2Hz cutoff for pressure
+    }
+
     let normAccel = normalizeData(magAccelLPF);
     let normGyro = hasGyro ? normalizeData(magGyroLPF) : [];
+    let normPressure = hasPressure ? normalizeData(pressureLPF) : [];
 
     if (sensorChart) sensorChart.destroy();
 
@@ -689,6 +701,19 @@ function processCSV(text) {
             label: 'Gyro Mag (5Hz LPF)',
             data: normGyro,
             borderColor: '#ff4081',
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1,
+            order: 1
+        });
+    }
+
+    if (hasPressure) {
+        datasets.push({
+            label: 'Pressure (2Hz LPF)',
+            data: normPressure,
+            borderColor: '#ffb74d',
             borderWidth: 2,
             pointRadius: 0,
             fill: false,
