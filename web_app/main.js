@@ -12,12 +12,23 @@ const btnNextFile = document.getElementById('btnNextFile');
 const lblCurrentFile = document.getElementById('lblCurrentFile');
 const fileInput = document.getElementById('fileInput');
 
-// Playhead Plugin for Chart.js
+// Playhead & Marker Plugin for Chart.js
+const markerColors = {
+    stride_start: '#448aff',
+    obs_start: '#69f0ae',
+    obs_stop: '#ff5252',
+    stride_stop: '#e040fb'
+};
+
 const playheadPlugin = {
     id: 'playhead',
     afterDatasetsDraw: (chart) => {
         if (!videoPlayer) return;
-        const currentTime = videoPlayer.currentTime; // seconds
+
+        const ctx = chart.ctx;
+        const area = chart.chartArea;
+        const top = area.top;
+        const bottom = area.bottom;
 
         // Ensure x scale exists
         if (!chart.scales.x) return;
@@ -25,25 +36,36 @@ const playheadPlugin = {
         // Apply sync offset (syncOffsetMs is centered at 30000)
         // Offset = (Slider - 30000) ms
         const offsetSec = (syncOffsetMs - 30000) / 1000.0;
-        const x = chart.scales.x.getPixelForValue(currentTime + offsetSec);
 
-        // Ensure x is within chart area
-        const area = chart.chartArea;
-        if (x < area.left || x > area.right) return;
+        // Helper function to draw vertical line
+        const drawLine = (timeVal, color, lineWidth = 2, isDashed = false) => {
+            const x = chart.scales.x.getPixelForValue(timeVal);
+            if (x < area.left || x > area.right) return;
 
-        const ctx = chart.ctx;
-        const top = area.top;
-        const bottom = area.bottom;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(x, top);
+            ctx.lineTo(x, bottom);
+            ctx.lineWidth = lineWidth;
+            ctx.strokeStyle = color;
+            if (isDashed) ctx.setLineDash([5, 5]);
+            else ctx.setLineDash([]);
+            ctx.stroke();
+            ctx.restore();
+        };
 
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(x, top);
-        ctx.lineTo(x, bottom);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = 'white';
-        ctx.setLineDash([]);
-        ctx.stroke();
-        ctx.restore();
+        // 1. Draw Playhead
+        const currentTime = videoPlayer.currentTime; // seconds
+        drawLine(currentTime + offsetSec, 'white', 2, false);
+
+        // 2. Draw Markers
+        for (const [key, ms] of Object.entries(marks)) {
+            if (ms !== null) {
+                const sec = ms / 1000.0;
+                // Markers are on video timeline, so shift by offset to match chart
+                drawLine(sec + offsetSec, markerColors[key] || 'yellow', 3, false);
+            }
+        }
     }
 };
 
@@ -759,11 +781,13 @@ function addMark(key) {
     const t_ms = videoPlayer.currentTime * 1000;
     marks[key] = Math.round(t_ms);
     console.log(`Marked ${key} at ${t_ms}ms`);
+    if (sensorChart) sensorChart.update('none');
 }
 
 function clearMarks() {
     marks = { stride_start: null, obs_start: null, obs_stop: null, stride_stop: null };
     console.log("Marks cleared");
+    if (sensorChart) sensorChart.update('none');
 }
 
 async function saveData() {
