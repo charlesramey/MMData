@@ -181,8 +181,16 @@ async function loadFile(idx) {
     // Setup Audio Context for Spectrogram
     setupSpectrogram(vidFile);
 
+    // Reset Sync Offset to 0ms (Slider center = 30000)
+    syncOffsetMs = 30000;
+    rngOffset.value = 30000;
+    lblOffset.textContent = "0 ms";
+
     // Clear marks
     clearMarks();
+
+    // Update cursor immediately
+    updateCursor(0);
 }
 
 function detectObstacle(path) {
