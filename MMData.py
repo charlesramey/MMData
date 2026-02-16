@@ -183,11 +183,12 @@ class MatplotlibCanvas(FigureCanvas):
 
     def reset_marker_objects(self):
         self.point_marker, = self.ax.plot([], [], 'o', color='#ff5252', markersize=6, zorder=10)
+        # Use 0 instead of np.nan to avoid singular matrix errors during transform
         self.m = {
-            'stride_start': (self.ax.axvline(x=np.nan, color='#448aff', ls='--', alpha=0), self.ax.text(0,0,'',color='#448aff',fontsize=8,fontweight='bold')),
-            'obs_start': (self.ax.axvline(x=np.nan, color='#69f0ae', ls=':', alpha=0), self.ax.text(0,0,'',color='#69f0ae',fontsize=8,fontweight='bold')),
-            'obs_stop': (self.ax.axvline(x=np.nan, color='#ff5252', ls=':', alpha=0), self.ax.text(0,0,'',color='#ff5252',fontsize=8,fontweight='bold')),
-            'stride_stop': (self.ax.axvline(x=np.nan, color='#e040fb', ls='--', alpha=0), self.ax.text(0,0,'',color='#e040fb',fontsize=8,fontweight='bold'))
+            'stride_start': (self.ax.axvline(x=1, color='#448aff', ls='--', alpha=0), self.ax.text(0,0,'',color='#448aff',fontsize=8,fontweight='bold', alpha=0)),
+            'obs_start': (self.ax.axvline(x=1, color='#69f0ae', ls=':', alpha=0), self.ax.text(0,0,'',color='#69f0ae',fontsize=8,fontweight='bold', alpha=0)),
+            'obs_stop': (self.ax.axvline(x=1, color='#ff5252', ls=':', alpha=0), self.ax.text(0,0,'',color='#ff5252',fontsize=8,fontweight='bold', alpha=0)),
+            'stride_stop': (self.ax.axvline(x=1, color='#e040fb', ls='--', alpha=0), self.ax.text(0,0,'',color='#e040fb',fontsize=8,fontweight='bold', alpha=0))
         }
 
     def clear_markers(self):
@@ -199,9 +200,13 @@ class MatplotlibCanvas(FigureCanvas):
     def update_data(self, df):
         self.df = df
         mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
+        mag = (mag - np.mean(mag))/np.std(mag)
+        gmag = np.sqrt(df['Gx']**2 + df['Gy']**2 + df['Gz']**2)
+        gmag = (gmag - np.mean(gmag))/np.std(gmag)
         diffs = np.diff(df['Relative_Time_s'])
         fs = 1.0 / np.mean(diffs) if len(diffs) > 0 else 100.0
         self.df['Amag_F'] = apply_lowpass(mag, 5.0, fs)
+        self.df['Gmag_F'] = apply_lowpass(gmag, 5.0, fs)
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
         self.ax.set_facecolor('#1e1e1e')
@@ -211,6 +216,8 @@ class MatplotlibCanvas(FigureCanvas):
             p = apply_lowpass(df['Pressure'].values, 2.0, fs)
             p_s = (p - p.min()) / (p.max() - p.min()) * mag.max() if p.max() > p.min() else p
             self.ax.plot(df['Relative_Time_s'], p_s, color='#ffb74d', lw=1.2, alpha=0.7, label='Pressure')
+        self.ax.plot(df['Relative_Time_s'], gmag, color='#f069ab', lw=0.8, alpha=0.3)
+        self.ax.plot(df['Relative_Time_s'], self.df['Gmag_F'], color='#69f0ae', lw=1.5, label='Gyro (5Hz)')
         self.ax.tick_params(colors='#e0e0e0')
         self.ax.xaxis.label.set_color('#e0e0e0')
         self.ax.yaxis.label.set_color('#e0e0e0')
