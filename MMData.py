@@ -380,369 +380,6 @@ class SpectrogramCanvas(QGraphicsView):
                  x = self.cursor_line.line().x1()
                  self.centerOn(x, self.scene.height()/2)
 
-class SyncPlayer(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Dog Agility Sync Tool")
-        self.setStyleSheet(STYLE_SHEET)
-
-        self.cap = None
-        self.is_playing = False
-        self.video_time_ms = 0
-        self.offset_ms = 0
-        self.idx = -1
-        self.dirs = []
-        self.current_video_path = None
-        self.computer_name = platform.node()
-        self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
-        self.marker_btns = {}
-        self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
-        self.playback_rate = 0.25
-        
-        self.central = QWidget()
-        self.setCentralWidget(self.central)
-        layout = QVBoxLayout(self.central)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-
-        # Top Toolbar
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-
-        dir_btn = QPushButton("📂 Open Directory")
-        dir_btn.clicked.connect(self.choose_directory)
-        dir_btn.setFixedWidth(140)
-
-        self.file_lbl = QLabel("No File Loaded")
-        self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
-
-        self.next_btn = QPushButton("Next File ⏭")
-        self.next_btn.clicked.connect(self.next_file)
-        self.next_btn.setFixedWidth(120)
-        self.next_btn.setEnabled(False)
-
-        toolbar.addWidget(dir_btn)
-        toolbar.addWidget(self.file_lbl)
-        toolbar.addStretch()
-        toolbar.addWidget(self.next_btn)
-        layout.addLayout(toolbar)
-
-        # Splitter
-        self.splitter = QSplitter(Qt.Vertical)
-        self.video_lbl = QLabel()
-        self.video_lbl.setStyleSheet("background-color: black;")
-        self.video_lbl.setAlignment(Qt.AlignCenter)
-        self.video_lbl.setMinimumSize(400, 300)
-
-        self.spectrogram = SpectrogramCanvas(self)
-        self.plot = MatplotlibCanvas(self)
-
-        self.splitter.addWidget(self.video_lbl)
-        self.splitter.addWidget(self.spectrogram)
-        self.splitter.addWidget(self.plot)
-        layout.addWidget(self.splitter)
-
-        # Time Scroll
-        scroll_layout = QHBoxLayout()
-        self.time_slider = QSlider(Qt.Horizontal)
-        self.time_slider.sliderMoved.connect(self.scrub_video)
-        scroll_layout.addWidget(QLabel("Time:")); scroll_layout.addWidget(self.time_slider)
-        layout.addLayout(scroll_layout)
-
-        # Controls
-        ctrls = QVBoxLayout()
-        ctrls.setSpacing(12)
-
-        # Row 1: Playback & Sync
-        row_play = QHBoxLayout()
-        self.play_btn = QPushButton("▶ PLAY")
-        self.play_btn.setFixedWidth(100)
-        self.play_btn.clicked.connect(self.toggle_play)
-
-        self.offset_slider = QSlider(Qt.Horizontal)
-        self.offset_slider.setRange(0, 60000)
-        self.offset_slider.setValue(30000)
-        self.offset_slider.valueChanged.connect(self.update_offset)
-
-        self.speed_combo = QComboBox()
-        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
-        self.speed_combo.setCurrentText("0.25x")
-        self.speed_combo.currentTextChanged.connect(self.change_speed)
-        self.speed_combo.setFixedWidth(70)
-
-        row_play.addWidget(self.play_btn)
-        row_play.addWidget(self.speed_combo)
-        row_play.addSpacing(20)
-        row_play.addWidget(QLabel("Sync Offset:"))
-        row_play.addWidget(self.offset_slider)
-        ctrls.addLayout(row_play)
-
-        # Row 2: Markers (Grid Layout for better look)
-        marker_layout = QHBoxLayout()
-        marker_layout.setSpacing(10)
-
-        # Stride Buttons
-        self.stride_start_btn = self.create_marker_btn('stride_start', "Stride Start (S)", "#448aff")
-        self.stride_stop_btn = self.create_marker_btn('stride_stop', "Stride Stop (F)", "#e040fb")
-
-        # Obstacle Buttons
-        self.obs_start_btn = self.create_marker_btn('obs_start', "Obstacle Start (D)", "#69f0ae")
-        self.obs_stop_btn = self.create_marker_btn('obs_stop', "Obstacle Stop (G)", "#ff5252")
-
-        marker_layout.addWidget(self.stride_start_btn)
-        marker_layout.addWidget(self.obs_start_btn)
-        marker_layout.addWidget(self.obs_stop_btn)
-        marker_layout.addWidget(self.stride_stop_btn)
-
-        ctrls.addLayout(marker_layout)
-
-        # Row 3: Actions
-        row_act = QHBoxLayout()
-        clr_btn = QPushButton("🗑 Clear Marks")
-        clr_btn.clicked.connect(self.clear_all)
-        clr_btn.setStyleSheet("background-color: #5d4037; border-color: #5d4037;")
-
-        self.save_btn = QPushButton("💾 Save Data")
-        self.save_btn.clicked.connect(self.save_data)
-        self.save_btn.setStyleSheet("background-color: #00bcd4; color: #ffffff; font-weight: bold; font-size: 14px; padding: 8px;")
-
-        self.abnormal_cb = QCheckBox("Abnormal")
-        self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
-
-        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
-        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
-        self.toggle_spec_btn.setCheckable(True)
-        self.toggle_spec_btn.setChecked(True)
-
-        row_act.addStretch()
-        row_act.addWidget(self.toggle_spec_btn)
-        row_act.addWidget(self.abnormal_cb)
-        row_act.addWidget(clr_btn)
-        row_act.addWidget(self.save_btn)
-        ctrls.addLayout(row_act)
-        
-        layout.addLayout(ctrls)
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frame)
-        self.timer.start(33)
-        self.audio_player.setPlaybackRate(self.playback_rate)
-
-        # Enforce initial visibility state
-        self.toggle_spectrogram()
-
-    def change_speed(self, text):
-        rate = float(text.replace('x', ''))
-        self.playback_rate = rate
-        self.audio_player.setPlaybackRate(rate)
-
-    def create_marker_btn(self, key, text, color_hex):
-        btn = QPushButton(text)
-        btn.setStyleSheet(f"border-bottom: 3px solid {color_hex}; font-weight: bold;")
-        btn.clicked.connect(lambda: self.add_mark(key))
-        btn.setToolTip("Select a file to see definition")
-        self.marker_btns[key] = btn
-        return btn
-
-    def choose_directory(self):
-        p = QFileDialog.getExistingDirectory(self, "Select Root")
-        if p:
-            self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
-            if self.dirs:
-                self.idx = 0
-                self.load_file(0)
-                self.next_btn.setEnabled(len(self.dirs) > 1)
-
-    def detect_obstacle_type(self, path):
-        path_lower = path.lower()
-        if 'jump' in path_lower: return 'jump'
-        if 'tunnel' in path_lower: return 'tunnel'
-        if 'teeter' in path_lower: return 'teeter'
-        if 'aframe' in path_lower or 'a-frame' in path_lower: return 'aframe'
-        if 'dogwalk' in path_lower: return 'dogwalk'
-        if 'weave' in path_lower: return 'weave'
-        return 'flat'
-
-    def update_tooltips(self, obs_type):
-        tips = TOOLTIPS.get(obs_type, TOOLTIPS['flat'])
-        for key, text in tips.items():
-            if key in self.marker_btns:
-                self.marker_btns[key].setToolTip(text)
-
-    def load_file(self, i):
-        self.clear_all()
-        dir_path = self.dirs[i]
-        v, c = find_video_csv_pair(dir_path)
-
-        if not v or not c:
-            QMessageBox.warning(self, "Error", f"Could not find video/CSV pair in {dir_path}")
-            return
-
-        # Update tooltips based on file name/path
-        obs_type = self.detect_obstacle_type(dir_path)
-        self.update_tooltips(obs_type)
-
-        # --- MODAL INTEGRATION ---
-        # We need to ask for column configuration if it's the first file,
-        # or perhaps re-use it? For now, let's ask every time or once?
-        # The requirement was "persistence: apply to subsequent files".
-        if not hasattr(self, 'column_config') or self.column_config is None:
-            dlg = ColumnSelectionDialog(c, self)
-            if dlg.exec_() == QDialog.Accepted:
-                self.column_config = dlg.result_config
-            else:
-                # User cancelled
-                return
-
-        df, err = load_data(c, self.column_config)
-        if df is not None:
-            self.plot.update_data(df, self.column_config)
-            if self.cap: self.cap.release()
-            self.cap = cv2.VideoCapture(v)
-            self.current_video_path = v
-            self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
-            self.file_lbl.setText(f"File: {os.path.basename(dir_path)} ({obs_type.upper()})")
-
-            audio_path = ensure_audio_extracted(v)
-            if audio_path:
-                self.spectrogram.update_data(audio_path)
-                url = QUrl.fromLocalFile(os.path.abspath(audio_path))
-                self.audio_player.setMedia(QMediaContent(url))
-            else:
-                self.spectrogram.update_data(None)
-                self.audio_player.setMedia(QMediaContent())
-
-            self.video_time_ms = 0
-            self.is_playing = False
-            self.play_btn.setText("▶ PLAY")
-            self.show_frame()
-        else:
-             QMessageBox.critical(self, "Error", f"Failed to load data: {err}")
-
-    def toggle_play(self):
-        self.is_playing = not self.is_playing
-        self.play_btn.setText("⏸ PAUSE" if self.is_playing else "▶ PLAY")
-        if self.is_playing:
-            self.audio_player.play()
-        else:
-            self.audio_player.pause()
-
-    def toggle_spectrogram(self):
-        self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
-
-    def update_frame(self):
-        if self.is_playing and self.cap:
-            has_audio = not self.audio_player.media().isNull()
-            ret = False
-            frame = None
-
-            if has_audio and self.audio_player.state() == QMediaPlayer.PlayingState:
-                audio_t = self.audio_player.position()
-                self.video_time_ms = audio_t
-
-                # Check drift, but only correct if significant to avoid choppy seek
-                cap_t = self.cap.get(cv2.CAP_PROP_POS_MSEC)
-                drift = audio_t - cap_t
-
-                # If drift is large (> 400ms), seek. Otherwise just grab next frame.
-                if abs(drift) > 400:
-                    self.cap.set(cv2.CAP_PROP_POS_MSEC, audio_t)
-                elif drift > 50: # If video is behind, read an extra frame to catch up
-                     self.cap.read()
-
-                ret, frame = self.cap.read()
-            else:
-                ret, frame = self.cap.read()
-                if ret:
-                    self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
-
-            if ret:
-                self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
-                self.display_img(frame)
-                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
-                self.spectrogram.update_cursor(self.video_time_ms)
-            else:
-                self.is_playing = False
-                self.play_btn.setText("▶ PLAY")
-                self.audio_player.pause()
-
-    def scrub_video(self, val):
-        if self.cap:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, val)
-            ret, frame = self.cap.read()
-            if ret:
-                self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
-                self.audio_player.setPosition(self.video_time_ms)
-                self.display_img(frame)
-                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
-                self.spectrogram.update_cursor(self.video_time_ms)
-
-    def show_frame(self):
-        if self.cap:
-            self.cap.set(cv2.CAP_PROP_POS_MSEC, self.video_time_ms)
-            ret, frame = self.cap.read()
-            if ret:
-                self.display_img(frame)
-                self.spectrogram.update_cursor(self.video_time_ms)
-
-    def display_img(self, frame):
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
-        qimg = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
-        self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
-
-    def update_offset(self, val):
-        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
-
-    def add_mark(self, key):
-        self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
-
-    def clear_all(self):
-        self.marks = {k: None for k in self.marks.keys()}
-        self.abnormal_cb.setChecked(False)
-        self.plot.clear_markers()
-
-    def save_data(self):
-        if self.idx == -1: return
-        log = {
-            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'Directory': os.path.basename(self.dirs[self.idx]),
-            'Offset_ms': self.offset_ms,
-            'Abnormal': self.abnormal_cb.isChecked()
-        }
-        log.update({f"{k}_ms": v for k, v in self.marks.items()})
-        
-        exists = os.path.exists(LOG_FILE)
-        try:
-            with open(LOG_FILE, 'a', newline='') as f:
-                w = csv.DictWriter(f, fieldnames=fieldnames)
-                if not exists: w.writeheader()
-                w.writerow(log)
-            self.next_file()
-        except Exception as e:
-            QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
-
-    def next_file(self):
-        if self.idx < len(self.dirs) - 1:
-            self.idx += 1; self.load_file(self.idx)
-        else:
-            QMessageBox.information(self, "Done", "All files in directory processed!")
-
-    def keyPressEvent(self, e):
-        mapping = {
-            Qt.Key_Space: self.toggle_play,
-            Qt.Key_S: lambda: self.add_mark('stride_start'),
-            Qt.Key_D: lambda: self.add_mark('obs_start'), 
-            Qt.Key_F: lambda: self.add_mark('obs_stop'),
-            Qt.Key_G: lambda: self.add_mark('stride_stop'),
-            Qt.Key_Return: self.save_data
-        }
-        if e.key() in mapping: mapping[e.key()]()
-        else: super().keyPressEvent(e)
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
-
-# --- COLUMN SELECTION DIALOG (Appended) ---
 
 class ColumnSelectionDialog(QDialog):
     def __init__(self, csv_path, parent=None):
@@ -963,3 +600,2124 @@ class ColumnSelectionDialog(QDialog):
             'series': series_list
         }
         self.accept()
+
+
+
+class ColumnSelectionDialog(QDialog):
+    def __init__(self, csv_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Data Columns")
+        self.resize(900, 600)
+        self.csv_path = csv_path
+        self.headers = []
+        self.preview_data = []
+        self.result_config = None
+
+        main_layout = QVBoxLayout(self)
+
+        # 1. Preview
+        preview_group = QGroupBox("CSV Preview (First 5 Rows)")
+        preview_layout = QVBoxLayout()
+        self.table = QTableWidget()
+        preview_layout.addWidget(self.table)
+        preview_group.setLayout(preview_layout)
+        main_layout.addWidget(preview_group)
+
+        # 2. Config
+        config_group = QGroupBox("Configuration")
+        config_layout = QVBoxLayout()
+
+        # Time
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("Time Column:"))
+        self.time_combo = QComboBox()
+        time_layout.addWidget(self.time_combo)
+        config_layout.addLayout(time_layout)
+
+        # Mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode:"))
+        self.mode_group = QButtonGroup(self)
+        self.radio_raw = QRadioButton("Raw Columns")
+        self.radio_mag = QRadioButton("Vector Magnitude (X,Y,Z)")
+        self.radio_raw.setChecked(True)
+        self.mode_group.addButton(self.radio_raw)
+        self.mode_group.addButton(self.radio_mag)
+        mode_layout.addWidget(self.radio_raw)
+        mode_layout.addWidget(self.radio_mag)
+        mode_layout.addStretch()
+        config_layout.addLayout(mode_layout)
+
+        # Series Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(300)
+        self.series_area = QWidget()
+        self.series_layout = QVBoxLayout(self.series_area)
+        self.series_layout.setContentsMargins(0, 0, 0, 0)
+        self.series_layout.addStretch()
+        scroll.setWidget(self.series_area)
+        config_layout.addWidget(scroll)
+
+        config_group.setLayout(config_layout)
+        main_layout.addWidget(config_group)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        main_layout.addWidget(buttons)
+
+        # Connect signals
+        self.radio_raw.toggled.connect(self.update_series_ui)
+        self.radio_mag.toggled.connect(self.update_series_ui)
+
+        # Load Data
+        self.load_csv_preview()
+        self.update_series_ui()
+
+    def load_csv_preview(self):
+        try:
+            with open(self.csv_path, 'r', newline='') as f:
+                reader = csv.reader(f)
+                try:
+                    self.headers = next(reader)
+                except StopIteration:
+                    self.headers = []
+
+                self.preview_data = []
+                for i, row in enumerate(reader):
+                    if i < 5: self.preview_data.append(row)
+                    else: break
+
+            if not self.headers:
+                QMessageBox.critical(self, "Error", "CSV file is empty or invalid.")
+                self.reject()
+                return
+
+            self.table.setColumnCount(len(self.headers))
+            self.table.setHorizontalHeaderLabels(self.headers)
+            self.table.setRowCount(len(self.preview_data))
+
+            for r, row in enumerate(self.preview_data):
+                for c, val in enumerate(row):
+                    if c < len(self.headers):
+                        self.table.setItem(r, c, QTableWidgetItem(val))
+
+            self.table.resizeColumnsToContents()
+            self.populate_combos()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read CSV: {e}")
+            self.reject()
+
+    def populate_combos(self):
+        self.time_combo.clear()
+        self.time_combo.addItems(self.headers)
+        # Smart detect Time
+        for i, h in enumerate(self.headers):
+            lower = h.lower()
+            if 'time' in lower or 'ts' == lower or 'timestamp' == lower:
+                self.time_combo.setCurrentIndex(i)
+                break
+
+    def update_series_ui(self):
+        # Clear existing widgets
+        while self.series_layout.count() > 1: # Keep stretch item
+            item = self.series_layout.takeAt(0)
+            widget = item.widget()
+            if widget: widget.deleteLater()
+
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        self.series_widgets = []
+
+        if mode == "raw":
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i}")
+                layout = QHBoxLayout()
+                combo = QComboBox()
+                combo.addItem("-- None --", None)
+                for h in self.headers: combo.addItem(h, h)
+
+                layout.addWidget(QLabel("Column:"))
+                layout.addWidget(combo)
+                group.setLayout(layout)
+
+                # Insert before stretch
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append({'combo': combo})
+
+        else: # Magnitude
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i} (Vector)")
+                layout = QGridLayout()
+
+                widgets = {}
+                for idx, axis in enumerate(['X', 'Y', 'Z']):
+                    layout.addWidget(QLabel(f"{axis}:"), idx, 0)
+                    combo = QComboBox()
+                    combo.addItem("-- None --", None)
+                    for h in self.headers: combo.addItem(h, h)
+                    layout.addWidget(combo, idx, 1)
+                    widgets[axis] = combo
+
+                    # Smart Auto-select
+                    hint = ''
+                    if i == 1: hint = 'A' # Accel
+                    elif i == 2: hint = 'G' # Gyro
+                    elif i == 3: hint = 'M' # Mag or Pressure? No, Mag usually M
+
+                    target_start = (hint + axis).lower()
+                    if hint:
+                        for idx_h, h in enumerate(self.headers):
+                            if h.lower().startswith(target_start):
+                                combo.setCurrentIndex(idx_h + 1)
+                                break
+
+                group.setLayout(layout)
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append(widgets)
+
+    def validate_and_accept(self):
+        time_col = self.time_combo.currentText()
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        series_list = []
+
+        valid_series_found = False
+
+        if mode == "raw":
+            for idx, w in enumerate(self.series_widgets):
+                col = w['combo'].currentData()
+                if col:
+                    series_list.append({
+                        'type': 'raw',
+                        'col': col,
+                        'label': f"Series {idx+1} ({col})"
+                    })
+                    valid_series_found = True
+        else:
+            for idx, w in enumerate(self.series_widgets):
+                x = w['X'].currentData()
+                y = w['Y'].currentData()
+                z = w['Z'].currentData()
+                if x and y and z:
+                    series_list.append({
+                        'type': 'magnitude',
+                        'x': x, 'y': y, 'z': z,
+                        'label': f"Series {idx+1} Mag"
+                    })
+                    valid_series_found = True
+
+        if not time_col:
+            QMessageBox.warning(self, "Validation Error", "Please select a Time column.")
+            return
+
+        if not valid_series_found:
+            QMessageBox.warning(self, "Validation Error", "Please select at least one valid data series.")
+            return
+
+        self.result_config = {
+            'time_col': time_col,
+            'mode': mode,
+            'series': series_list
+        }
+        self.accept()
+
+
+class SyncPlayer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Dog Agility Sync Tool")
+        self.setStyleSheet(STYLE_SHEET)
+
+        self.cap = None
+        self.is_playing = False
+        self.video_time_ms = 0
+        self.offset_ms = 0
+        self.idx = -1
+        self.dirs = []
+        self.current_video_path = None
+        self.computer_name = platform.node()
+        self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
+        self.marker_btns = {}
+        self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
+        self.playback_rate = 0.25
+
+        self.central = QWidget()
+        self.setCentralWidget(self.central)
+        layout = QVBoxLayout(self.central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Top Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+
+        dir_btn = QPushButton("📂 Open Directory")
+        dir_btn.clicked.connect(self.choose_directory)
+        dir_btn.setFixedWidth(140)
+
+        self.file_lbl = QLabel("No File Loaded")
+        self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
+
+        self.next_btn = QPushButton("Next File ⏭")
+        self.next_btn.clicked.connect(self.next_file)
+        self.next_btn.setFixedWidth(120)
+        self.next_btn.setEnabled(False)
+
+        toolbar.addWidget(dir_btn)
+        toolbar.addWidget(self.file_lbl)
+        toolbar.addStretch()
+        toolbar.addWidget(self.next_btn)
+        layout.addLayout(toolbar)
+
+        # Splitter
+        self.splitter = QSplitter(Qt.Vertical)
+        self.video_lbl = QLabel()
+        self.video_lbl.setStyleSheet("background-color: black;")
+        self.video_lbl.setAlignment(Qt.AlignCenter)
+        self.video_lbl.setMinimumSize(400, 300)
+
+        self.spectrogram = SpectrogramCanvas(self)
+        self.plot = MatplotlibCanvas(self)
+
+        self.splitter.addWidget(self.video_lbl)
+        self.splitter.addWidget(self.spectrogram)
+        self.splitter.addWidget(self.plot)
+        layout.addWidget(self.splitter)
+
+        # Time Scroll
+        scroll_layout = QHBoxLayout()
+        self.time_slider = QSlider(Qt.Horizontal)
+        self.time_slider.sliderMoved.connect(self.scrub_video)
+        scroll_layout.addWidget(QLabel("Time:")); scroll_layout.addWidget(self.time_slider)
+        layout.addLayout(scroll_layout)
+
+        # Controls
+        ctrls = QVBoxLayout()
+        ctrls.setSpacing(12)
+
+        # Row 1: Playback & Sync
+        row_play = QHBoxLayout()
+        self.play_btn = QPushButton("▶ PLAY")
+        self.play_btn.setFixedWidth(100)
+        self.play_btn.clicked.connect(self.toggle_play)
+
+        self.offset_slider = QSlider(Qt.Horizontal)
+        self.offset_slider.setRange(0, 60000)
+        self.offset_slider.setValue(30000)
+        self.offset_slider.valueChanged.connect(self.update_offset)
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
+        self.speed_combo.setCurrentText("0.25x")
+        self.speed_combo.currentTextChanged.connect(self.change_speed)
+        self.speed_combo.setFixedWidth(70)
+
+        row_play.addWidget(self.play_btn)
+        row_play.addWidget(self.speed_combo)
+        row_play.addSpacing(20)
+        row_play.addWidget(QLabel("Sync Offset:"))
+        row_play.addWidget(self.offset_slider)
+        ctrls.addLayout(row_play)
+
+        # Row 2: Markers (Grid Layout for better look)
+        marker_layout = QHBoxLayout()
+        marker_layout.setSpacing(10)
+
+        # Stride Buttons
+        self.stride_start_btn = self.create_marker_btn('stride_start', "Stride Start (S)", "#448aff")
+        self.stride_stop_btn = self.create_marker_btn('stride_stop', "Stride Stop (F)", "#e040fb")
+
+        # Obstacle Buttons
+        self.obs_start_btn = self.create_marker_btn('obs_start', "Obstacle Start (D)", "#69f0ae")
+        self.obs_stop_btn = self.create_marker_btn('obs_stop', "Obstacle Stop (G)", "#ff5252")
+
+        marker_layout.addWidget(self.stride_start_btn)
+        marker_layout.addWidget(self.obs_start_btn)
+        marker_layout.addWidget(self.obs_stop_btn)
+        marker_layout.addWidget(self.stride_stop_btn)
+
+        ctrls.addLayout(marker_layout)
+
+        # Row 3: Actions
+        row_act = QHBoxLayout()
+        clr_btn = QPushButton("🗑 Clear Marks")
+        clr_btn.clicked.connect(self.clear_all)
+        clr_btn.setStyleSheet("background-color: #5d4037; border-color: #5d4037;")
+
+        self.save_btn = QPushButton("💾 Save Data")
+        self.save_btn.clicked.connect(self.save_data)
+        self.save_btn.setStyleSheet("background-color: #00bcd4; color: #ffffff; font-weight: bold; font-size: 14px; padding: 8px;")
+
+        self.abnormal_cb = QCheckBox("Abnormal")
+        self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
+
+        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
+        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
+        self.toggle_spec_btn.setCheckable(True)
+        self.toggle_spec_btn.setChecked(True)
+
+        row_act.addStretch()
+        row_act.addWidget(self.toggle_spec_btn)
+        row_act.addWidget(self.abnormal_cb)
+        row_act.addWidget(clr_btn)
+        row_act.addWidget(self.save_btn)
+        ctrls.addLayout(row_act)
+
+        layout.addLayout(ctrls)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(33)
+        self.audio_player.setPlaybackRate(self.playback_rate)
+
+        # Enforce initial visibility state
+        self.toggle_spectrogram()
+
+    def change_speed(self, text):
+        rate = float(text.replace('x', ''))
+        self.playback_rate = rate
+        self.audio_player.setPlaybackRate(rate)
+
+    def create_marker_btn(self, key, text, color_hex):
+        btn = QPushButton(text)
+        btn.setStyleSheet(f"border-bottom: 3px solid {color_hex}; font-weight: bold;")
+        btn.clicked.connect(lambda: self.add_mark(key))
+        btn.setToolTip("Select a file to see definition")
+        self.marker_btns[key] = btn
+        return btn
+
+    def choose_directory(self):
+        p = QFileDialog.getExistingDirectory(self, "Select Root")
+        if p:
+            self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
+            if self.dirs:
+                self.idx = 0
+                self.load_file(0)
+                self.next_btn.setEnabled(len(self.dirs) > 1)
+
+    def detect_obstacle_type(self, path):
+        path_lower = path.lower()
+        if 'jump' in path_lower: return 'jump'
+        if 'tunnel' in path_lower: return 'tunnel'
+        if 'teeter' in path_lower: return 'teeter'
+        if 'aframe' in path_lower or 'a-frame' in path_lower: return 'aframe'
+        if 'dogwalk' in path_lower: return 'dogwalk'
+        if 'weave' in path_lower: return 'weave'
+        return 'flat'
+
+    def update_tooltips(self, obs_type):
+        tips = TOOLTIPS.get(obs_type, TOOLTIPS['flat'])
+        for key, text in tips.items():
+            if key in self.marker_btns:
+                self.marker_btns[key].setToolTip(text)
+
+    def load_file(self, i):
+        self.clear_all()
+        dir_path = self.dirs[i]
+        v, c = find_video_csv_pair(dir_path)
+
+        if not v or not c:
+            QMessageBox.warning(self, "Error", f"Could not find video/CSV pair in {dir_path}")
+            return
+
+        # Update tooltips based on file name/path
+        obs_type = self.detect_obstacle_type(dir_path)
+        self.update_tooltips(obs_type)
+
+        # --- MODAL INTEGRATION ---
+        # We need to ask for column configuration if it's the first file,
+        # or perhaps re-use it? For now, let's ask every time or once?
+        # The requirement was "persistence: apply to subsequent files".
+        if not hasattr(self, 'column_config') or self.column_config is None:
+            dlg = ColumnSelectionDialog(c, self)
+            if dlg.exec_() == QDialog.Accepted:
+                self.column_config = dlg.result_config
+            else:
+                # User cancelled
+                return
+
+        df, err = load_data(c, self.column_config)
+        if df is not None:
+            self.plot.update_data(df, self.column_config)
+            if self.cap: self.cap.release()
+            self.cap = cv2.VideoCapture(v)
+            self.current_video_path = v
+            self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            self.file_lbl.setText(f"File: {os.path.basename(dir_path)} ({obs_type.upper()})")
+
+            audio_path = ensure_audio_extracted(v)
+            if audio_path:
+                self.spectrogram.update_data(audio_path)
+                url = QUrl.fromLocalFile(os.path.abspath(audio_path))
+                self.audio_player.setMedia(QMediaContent(url))
+            else:
+                self.spectrogram.update_data(None)
+                self.audio_player.setMedia(QMediaContent())
+
+            self.video_time_ms = 0
+            self.is_playing = False
+            self.play_btn.setText("▶ PLAY")
+            self.show_frame()
+        else:
+             QMessageBox.critical(self, "Error", f"Failed to load data: {err}")
+
+    def toggle_play(self):
+        self.is_playing = not self.is_playing
+        self.play_btn.setText("⏸ PAUSE" if self.is_playing else "▶ PLAY")
+        if self.is_playing:
+            self.audio_player.play()
+        else:
+            self.audio_player.pause()
+
+    def toggle_spectrogram(self):
+        self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
+
+    def update_frame(self):
+        if self.is_playing and self.cap:
+            has_audio = not self.audio_player.media().isNull()
+            ret = False
+            frame = None
+
+            if has_audio and self.audio_player.state() == QMediaPlayer.PlayingState:
+                audio_t = self.audio_player.position()
+                self.video_time_ms = audio_t
+
+                # Check drift, but only correct if significant to avoid choppy seek
+                cap_t = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+                drift = audio_t - cap_t
+
+                # If drift is large (> 400ms), seek. Otherwise just grab next frame.
+                if abs(drift) > 400:
+                    self.cap.set(cv2.CAP_PROP_POS_MSEC, audio_t)
+                elif drift > 50: # If video is behind, read an extra frame to catch up
+                     self.cap.read()
+
+                ret, frame = self.cap.read()
+            else:
+                ret, frame = self.cap.read()
+                if ret:
+                    self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+
+            if ret:
+                self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+            else:
+                self.is_playing = False
+                self.play_btn.setText("▶ PLAY")
+                self.audio_player.pause()
+
+    def scrub_video(self, val):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, val)
+            ret, frame = self.cap.read()
+            if ret:
+                self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                self.audio_player.setPosition(self.video_time_ms)
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def show_frame(self):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_MSEC, self.video_time_ms)
+            ret, frame = self.cap.read()
+            if ret:
+                self.display_img(frame)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def display_img(self, frame):
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
+        self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
+
+    def update_offset(self, val):
+        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+
+    def add_mark(self, key):
+        self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
+
+    def clear_all(self):
+        self.marks = {k: None for k in self.marks.keys()}
+        self.abnormal_cb.setChecked(False)
+        self.plot.clear_markers()
+
+    def save_data(self):
+        if self.idx == -1: return
+        log = {
+            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Directory': os.path.basename(self.dirs[self.idx]),
+            'Offset_ms': self.offset_ms,
+            'Abnormal': self.abnormal_cb.isChecked()
+        }
+        log.update({f"{k}_ms": v for k, v in self.marks.items()})
+
+        exists = os.path.exists(LOG_FILE)
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                if not exists: w.writeheader()
+                w.writerow(log)
+            self.next_file()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
+
+    def next_file(self):
+        if self.idx < len(self.dirs) - 1:
+            self.idx += 1; self.load_file(self.idx)
+        else:
+            QMessageBox.information(self, "Done", "All files in directory processed!")
+
+    def keyPressEvent(self, e):
+        mapping = {
+            Qt.Key_Space: self.toggle_play,
+            Qt.Key_S: lambda: self.add_mark('stride_start'),
+            Qt.Key_D: lambda: self.add_mark('obs_start'),
+            Qt.Key_F: lambda: self.add_mark('obs_stop'),
+            Qt.Key_G: lambda: self.add_mark('stride_stop'),
+            Qt.Key_Return: self.save_data
+        }
+        if e.key() in mapping: mapping[e.key()]()
+        else: super().keyPressEvent(e)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
+
+# --- COLUMN SELECTION DIALOG (Appended) ---
+
+
+
+class ColumnSelectionDialog(QDialog):
+    def __init__(self, csv_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Data Columns")
+        self.resize(900, 600)
+        self.csv_path = csv_path
+        self.headers = []
+        self.preview_data = []
+        self.result_config = None
+
+        main_layout = QVBoxLayout(self)
+
+        # 1. Preview
+        preview_group = QGroupBox("CSV Preview (First 5 Rows)")
+        preview_layout = QVBoxLayout()
+        self.table = QTableWidget()
+        preview_layout.addWidget(self.table)
+        preview_group.setLayout(preview_layout)
+        main_layout.addWidget(preview_group)
+
+        # 2. Config
+        config_group = QGroupBox("Configuration")
+        config_layout = QVBoxLayout()
+
+        # Time
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("Time Column:"))
+        self.time_combo = QComboBox()
+        time_layout.addWidget(self.time_combo)
+        config_layout.addLayout(time_layout)
+
+        # Mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode:"))
+        self.mode_group = QButtonGroup(self)
+        self.radio_raw = QRadioButton("Raw Columns")
+        self.radio_mag = QRadioButton("Vector Magnitude (X,Y,Z)")
+        self.radio_raw.setChecked(True)
+        self.mode_group.addButton(self.radio_raw)
+        self.mode_group.addButton(self.radio_mag)
+        mode_layout.addWidget(self.radio_raw)
+        mode_layout.addWidget(self.radio_mag)
+        mode_layout.addStretch()
+        config_layout.addLayout(mode_layout)
+
+        # Series Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(300)
+        self.series_area = QWidget()
+        self.series_layout = QVBoxLayout(self.series_area)
+        self.series_layout.setContentsMargins(0, 0, 0, 0)
+        self.series_layout.addStretch()
+        scroll.setWidget(self.series_area)
+        config_layout.addWidget(scroll)
+
+        config_group.setLayout(config_layout)
+        main_layout.addWidget(config_group)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        main_layout.addWidget(buttons)
+
+        # Connect signals
+        self.radio_raw.toggled.connect(self.update_series_ui)
+        self.radio_mag.toggled.connect(self.update_series_ui)
+
+        # Load Data
+        self.load_csv_preview()
+        self.update_series_ui()
+
+    def load_csv_preview(self):
+        try:
+            with open(self.csv_path, 'r', newline='') as f:
+                reader = csv.reader(f)
+                try:
+                    self.headers = next(reader)
+                except StopIteration:
+                    self.headers = []
+
+                self.preview_data = []
+                for i, row in enumerate(reader):
+                    if i < 5: self.preview_data.append(row)
+                    else: break
+
+            if not self.headers:
+                QMessageBox.critical(self, "Error", "CSV file is empty or invalid.")
+                self.reject()
+                return
+
+            self.table.setColumnCount(len(self.headers))
+            self.table.setHorizontalHeaderLabels(self.headers)
+            self.table.setRowCount(len(self.preview_data))
+
+            for r, row in enumerate(self.preview_data):
+                for c, val in enumerate(row):
+                    if c < len(self.headers):
+                        self.table.setItem(r, c, QTableWidgetItem(val))
+
+            self.table.resizeColumnsToContents()
+            self.populate_combos()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read CSV: {e}")
+            self.reject()
+
+    def populate_combos(self):
+        self.time_combo.clear()
+        self.time_combo.addItems(self.headers)
+        # Smart detect Time
+        for i, h in enumerate(self.headers):
+            lower = h.lower()
+            if 'time' in lower or 'ts' == lower or 'timestamp' == lower:
+                self.time_combo.setCurrentIndex(i)
+                break
+
+    def update_series_ui(self):
+        # Clear existing widgets
+        while self.series_layout.count() > 1: # Keep stretch item
+            item = self.series_layout.takeAt(0)
+            widget = item.widget()
+            if widget: widget.deleteLater()
+
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        self.series_widgets = []
+
+        if mode == "raw":
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i}")
+                layout = QHBoxLayout()
+                combo = QComboBox()
+                combo.addItem("-- None --", None)
+                for h in self.headers: combo.addItem(h, h)
+
+                layout.addWidget(QLabel("Column:"))
+                layout.addWidget(combo)
+                group.setLayout(layout)
+
+                # Insert before stretch
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append({'combo': combo})
+
+        else: # Magnitude
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i} (Vector)")
+                layout = QGridLayout()
+
+                widgets = {}
+                for idx, axis in enumerate(['X', 'Y', 'Z']):
+                    layout.addWidget(QLabel(f"{axis}:"), idx, 0)
+                    combo = QComboBox()
+                    combo.addItem("-- None --", None)
+                    for h in self.headers: combo.addItem(h, h)
+                    layout.addWidget(combo, idx, 1)
+                    widgets[axis] = combo
+
+                    # Smart Auto-select
+                    hint = ''
+                    if i == 1: hint = 'A' # Accel
+                    elif i == 2: hint = 'G' # Gyro
+                    elif i == 3: hint = 'M' # Mag or Pressure? No, Mag usually M
+
+                    target_start = (hint + axis).lower()
+                    if hint:
+                        for idx_h, h in enumerate(self.headers):
+                            if h.lower().startswith(target_start):
+                                combo.setCurrentIndex(idx_h + 1)
+                                break
+
+                group.setLayout(layout)
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append(widgets)
+
+    def validate_and_accept(self):
+        time_col = self.time_combo.currentText()
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        series_list = []
+
+        valid_series_found = False
+
+        if mode == "raw":
+            for idx, w in enumerate(self.series_widgets):
+                col = w['combo'].currentData()
+                if col:
+                    series_list.append({
+                        'type': 'raw',
+                        'col': col,
+                        'label': f"Series {idx+1} ({col})"
+                    })
+                    valid_series_found = True
+        else:
+            for idx, w in enumerate(self.series_widgets):
+                x = w['X'].currentData()
+                y = w['Y'].currentData()
+                z = w['Z'].currentData()
+                if x and y and z:
+                    series_list.append({
+                        'type': 'magnitude',
+                        'x': x, 'y': y, 'z': z,
+                        'label': f"Series {idx+1} Mag"
+                    })
+                    valid_series_found = True
+
+        if not time_col:
+            QMessageBox.warning(self, "Validation Error", "Please select a Time column.")
+            return
+
+        if not valid_series_found:
+            QMessageBox.warning(self, "Validation Error", "Please select at least one valid data series.")
+            return
+
+        self.result_config = {
+            'time_col': time_col,
+            'mode': mode,
+            'series': series_list
+        }
+        self.accept()
+
+
+class SyncPlayer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Dog Agility Sync Tool")
+        self.setStyleSheet(STYLE_SHEET)
+
+        self.cap = None
+        self.is_playing = False
+        self.video_time_ms = 0
+        self.offset_ms = 0
+        self.idx = -1
+        self.dirs = []
+        self.current_video_path = None
+        self.computer_name = platform.node()
+        self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
+        self.marker_btns = {}
+        self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
+        self.playback_rate = 0.25
+
+        self.central = QWidget()
+        self.setCentralWidget(self.central)
+        layout = QVBoxLayout(self.central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Top Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+
+        dir_btn = QPushButton("📂 Open Directory")
+        dir_btn.clicked.connect(self.choose_directory)
+        dir_btn.setFixedWidth(140)
+
+        self.file_lbl = QLabel("No File Loaded")
+        self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
+
+        self.next_btn = QPushButton("Next File ⏭")
+        self.next_btn.clicked.connect(self.next_file)
+        self.next_btn.setFixedWidth(120)
+        self.next_btn.setEnabled(False)
+
+        toolbar.addWidget(dir_btn)
+        toolbar.addWidget(self.file_lbl)
+        toolbar.addStretch()
+        toolbar.addWidget(self.next_btn)
+        layout.addLayout(toolbar)
+
+        # Splitter
+        self.splitter = QSplitter(Qt.Vertical)
+        self.video_lbl = QLabel()
+        self.video_lbl.setStyleSheet("background-color: black;")
+        self.video_lbl.setAlignment(Qt.AlignCenter)
+        self.video_lbl.setMinimumSize(400, 300)
+
+        self.spectrogram = SpectrogramCanvas(self)
+        self.plot = MatplotlibCanvas(self)
+
+        self.splitter.addWidget(self.video_lbl)
+        self.splitter.addWidget(self.spectrogram)
+        self.splitter.addWidget(self.plot)
+        layout.addWidget(self.splitter)
+
+        # Time Scroll
+        scroll_layout = QHBoxLayout()
+        self.time_slider = QSlider(Qt.Horizontal)
+        self.time_slider.sliderMoved.connect(self.scrub_video)
+        scroll_layout.addWidget(QLabel("Time:")); scroll_layout.addWidget(self.time_slider)
+        layout.addLayout(scroll_layout)
+
+        # Controls
+        ctrls = QVBoxLayout()
+        ctrls.setSpacing(12)
+
+        # Row 1: Playback & Sync
+        row_play = QHBoxLayout()
+        self.play_btn = QPushButton("▶ PLAY")
+        self.play_btn.setFixedWidth(100)
+        self.play_btn.clicked.connect(self.toggle_play)
+
+        self.offset_slider = QSlider(Qt.Horizontal)
+        self.offset_slider.setRange(0, 60000)
+        self.offset_slider.setValue(30000)
+        self.offset_slider.valueChanged.connect(self.update_offset)
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
+        self.speed_combo.setCurrentText("0.25x")
+        self.speed_combo.currentTextChanged.connect(self.change_speed)
+        self.speed_combo.setFixedWidth(70)
+
+        row_play.addWidget(self.play_btn)
+        row_play.addWidget(self.speed_combo)
+        row_play.addSpacing(20)
+        row_play.addWidget(QLabel("Sync Offset:"))
+        row_play.addWidget(self.offset_slider)
+        ctrls.addLayout(row_play)
+
+        # Row 2: Markers (Grid Layout for better look)
+        marker_layout = QHBoxLayout()
+        marker_layout.setSpacing(10)
+
+        # Stride Buttons
+        self.stride_start_btn = self.create_marker_btn('stride_start', "Stride Start (S)", "#448aff")
+        self.stride_stop_btn = self.create_marker_btn('stride_stop', "Stride Stop (F)", "#e040fb")
+
+        # Obstacle Buttons
+        self.obs_start_btn = self.create_marker_btn('obs_start', "Obstacle Start (D)", "#69f0ae")
+        self.obs_stop_btn = self.create_marker_btn('obs_stop', "Obstacle Stop (G)", "#ff5252")
+
+        marker_layout.addWidget(self.stride_start_btn)
+        marker_layout.addWidget(self.obs_start_btn)
+        marker_layout.addWidget(self.obs_stop_btn)
+        marker_layout.addWidget(self.stride_stop_btn)
+
+        ctrls.addLayout(marker_layout)
+
+        # Row 3: Actions
+        row_act = QHBoxLayout()
+        clr_btn = QPushButton("🗑 Clear Marks")
+        clr_btn.clicked.connect(self.clear_all)
+        clr_btn.setStyleSheet("background-color: #5d4037; border-color: #5d4037;")
+
+        self.save_btn = QPushButton("💾 Save Data")
+        self.save_btn.clicked.connect(self.save_data)
+        self.save_btn.setStyleSheet("background-color: #00bcd4; color: #ffffff; font-weight: bold; font-size: 14px; padding: 8px;")
+
+        self.abnormal_cb = QCheckBox("Abnormal")
+        self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
+
+        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
+        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
+        self.toggle_spec_btn.setCheckable(True)
+        self.toggle_spec_btn.setChecked(True)
+
+        row_act.addStretch()
+        row_act.addWidget(self.toggle_spec_btn)
+        row_act.addWidget(self.abnormal_cb)
+        row_act.addWidget(clr_btn)
+        row_act.addWidget(self.save_btn)
+        ctrls.addLayout(row_act)
+
+        layout.addLayout(ctrls)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(33)
+        self.audio_player.setPlaybackRate(self.playback_rate)
+
+        # Enforce initial visibility state
+        self.toggle_spectrogram()
+
+    def change_speed(self, text):
+        rate = float(text.replace('x', ''))
+        self.playback_rate = rate
+        self.audio_player.setPlaybackRate(rate)
+
+    def create_marker_btn(self, key, text, color_hex):
+        btn = QPushButton(text)
+        btn.setStyleSheet(f"border-bottom: 3px solid {color_hex}; font-weight: bold;")
+        btn.clicked.connect(lambda: self.add_mark(key))
+        btn.setToolTip("Select a file to see definition")
+        self.marker_btns[key] = btn
+        return btn
+
+    def choose_directory(self):
+        p = QFileDialog.getExistingDirectory(self, "Select Root")
+        if p:
+            self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
+            if self.dirs:
+                self.idx = 0
+                self.load_file(0)
+                self.next_btn.setEnabled(len(self.dirs) > 1)
+
+    def detect_obstacle_type(self, path):
+        path_lower = path.lower()
+        if 'jump' in path_lower: return 'jump'
+        if 'tunnel' in path_lower: return 'tunnel'
+        if 'teeter' in path_lower: return 'teeter'
+        if 'aframe' in path_lower or 'a-frame' in path_lower: return 'aframe'
+        if 'dogwalk' in path_lower: return 'dogwalk'
+        if 'weave' in path_lower: return 'weave'
+        return 'flat'
+
+    def update_tooltips(self, obs_type):
+        tips = TOOLTIPS.get(obs_type, TOOLTIPS['flat'])
+        for key, text in tips.items():
+            if key in self.marker_btns:
+                self.marker_btns[key].setToolTip(text)
+
+    def load_file(self, i):
+        self.clear_all()
+        dir_path = self.dirs[i]
+        v, c = find_video_csv_pair(dir_path)
+
+        if not v or not c:
+            QMessageBox.warning(self, "Error", f"Could not find video/CSV pair in {dir_path}")
+            return
+
+        # Update tooltips based on file name/path
+        obs_type = self.detect_obstacle_type(dir_path)
+        self.update_tooltips(obs_type)
+
+        # --- MODAL INTEGRATION ---
+        # We need to ask for column configuration if it's the first file,
+        # or perhaps re-use it? For now, let's ask every time or once?
+        # The requirement was "persistence: apply to subsequent files".
+        if not hasattr(self, 'column_config') or self.column_config is None:
+            dlg = ColumnSelectionDialog(c, self)
+            if dlg.exec_() == QDialog.Accepted:
+                self.column_config = dlg.result_config
+            else:
+                # User cancelled
+                return
+
+        df, err = load_data(c, self.column_config)
+        if df is not None:
+            self.plot.update_data(df, self.column_config)
+            if self.cap: self.cap.release()
+            self.cap = cv2.VideoCapture(v)
+            self.current_video_path = v
+            self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            self.file_lbl.setText(f"File: {os.path.basename(dir_path)} ({obs_type.upper()})")
+
+            audio_path = ensure_audio_extracted(v)
+            if audio_path:
+                self.spectrogram.update_data(audio_path)
+                url = QUrl.fromLocalFile(os.path.abspath(audio_path))
+                self.audio_player.setMedia(QMediaContent(url))
+            else:
+                self.spectrogram.update_data(None)
+                self.audio_player.setMedia(QMediaContent())
+
+            self.video_time_ms = 0
+            self.is_playing = False
+            self.play_btn.setText("▶ PLAY")
+            self.show_frame()
+        else:
+             QMessageBox.critical(self, "Error", f"Failed to load data: {err}")
+
+    def toggle_play(self):
+        self.is_playing = not self.is_playing
+        self.play_btn.setText("⏸ PAUSE" if self.is_playing else "▶ PLAY")
+        if self.is_playing:
+            self.audio_player.play()
+        else:
+            self.audio_player.pause()
+
+    def toggle_spectrogram(self):
+        self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
+
+    def update_frame(self):
+        if self.is_playing and self.cap:
+            has_audio = not self.audio_player.media().isNull()
+            ret = False
+            frame = None
+
+            if has_audio and self.audio_player.state() == QMediaPlayer.PlayingState:
+                audio_t = self.audio_player.position()
+                self.video_time_ms = audio_t
+
+                # Check drift, but only correct if significant to avoid choppy seek
+                cap_t = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+                drift = audio_t - cap_t
+
+                # If drift is large (> 400ms), seek. Otherwise just grab next frame.
+                if abs(drift) > 400:
+                    self.cap.set(cv2.CAP_PROP_POS_MSEC, audio_t)
+                elif drift > 50: # If video is behind, read an extra frame to catch up
+                     self.cap.read()
+
+                ret, frame = self.cap.read()
+            else:
+                ret, frame = self.cap.read()
+                if ret:
+                    self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+
+            if ret:
+                self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+            else:
+                self.is_playing = False
+                self.play_btn.setText("▶ PLAY")
+                self.audio_player.pause()
+
+    def scrub_video(self, val):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, val)
+            ret, frame = self.cap.read()
+            if ret:
+                self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                self.audio_player.setPosition(self.video_time_ms)
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def show_frame(self):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_MSEC, self.video_time_ms)
+            ret, frame = self.cap.read()
+            if ret:
+                self.display_img(frame)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def display_img(self, frame):
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
+        self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
+
+    def update_offset(self, val):
+        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+
+    def add_mark(self, key):
+        self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
+
+    def clear_all(self):
+        self.marks = {k: None for k in self.marks.keys()}
+        self.abnormal_cb.setChecked(False)
+        self.plot.clear_markers()
+
+    def save_data(self):
+        if self.idx == -1: return
+        log = {
+            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Directory': os.path.basename(self.dirs[self.idx]),
+            'Offset_ms': self.offset_ms,
+            'Abnormal': self.abnormal_cb.isChecked()
+        }
+        log.update({f"{k}_ms": v for k, v in self.marks.items()})
+
+        exists = os.path.exists(LOG_FILE)
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                if not exists: w.writeheader()
+                w.writerow(log)
+            self.next_file()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
+
+    def next_file(self):
+        if self.idx < len(self.dirs) - 1:
+            self.idx += 1; self.load_file(self.idx)
+        else:
+            QMessageBox.information(self, "Done", "All files in directory processed!")
+
+    def keyPressEvent(self, e):
+        mapping = {
+            Qt.Key_Space: self.toggle_play,
+            Qt.Key_S: lambda: self.add_mark('stride_start'),
+            Qt.Key_D: lambda: self.add_mark('obs_start'),
+            Qt.Key_F: lambda: self.add_mark('obs_stop'),
+            Qt.Key_G: lambda: self.add_mark('stride_stop'),
+            Qt.Key_Return: self.save_data
+        }
+        if e.key() in mapping: mapping[e.key()]()
+        else: super().keyPressEvent(e)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
+
+# --- COLUMN SELECTION DIALOG (Appended) ---
+
+
+
+class ColumnSelectionDialog(QDialog):
+    def __init__(self, csv_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Data Columns")
+        self.resize(900, 600)
+        self.csv_path = csv_path
+        self.headers = []
+        self.preview_data = []
+        self.result_config = None
+
+        main_layout = QVBoxLayout(self)
+
+        # 1. Preview
+        preview_group = QGroupBox("CSV Preview (First 5 Rows)")
+        preview_layout = QVBoxLayout()
+        self.table = QTableWidget()
+        preview_layout.addWidget(self.table)
+        preview_group.setLayout(preview_layout)
+        main_layout.addWidget(preview_group)
+
+        # 2. Config
+        config_group = QGroupBox("Configuration")
+        config_layout = QVBoxLayout()
+
+        # Time
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("Time Column:"))
+        self.time_combo = QComboBox()
+        time_layout.addWidget(self.time_combo)
+        config_layout.addLayout(time_layout)
+
+        # Mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode:"))
+        self.mode_group = QButtonGroup(self)
+        self.radio_raw = QRadioButton("Raw Columns")
+        self.radio_mag = QRadioButton("Vector Magnitude (X,Y,Z)")
+        self.radio_raw.setChecked(True)
+        self.mode_group.addButton(self.radio_raw)
+        self.mode_group.addButton(self.radio_mag)
+        mode_layout.addWidget(self.radio_raw)
+        mode_layout.addWidget(self.radio_mag)
+        mode_layout.addStretch()
+        config_layout.addLayout(mode_layout)
+
+        # Series Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(300)
+        self.series_area = QWidget()
+        self.series_layout = QVBoxLayout(self.series_area)
+        self.series_layout.setContentsMargins(0, 0, 0, 0)
+        self.series_layout.addStretch()
+        scroll.setWidget(self.series_area)
+        config_layout.addWidget(scroll)
+
+        config_group.setLayout(config_layout)
+        main_layout.addWidget(config_group)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        main_layout.addWidget(buttons)
+
+        # Connect signals
+        self.radio_raw.toggled.connect(self.update_series_ui)
+        self.radio_mag.toggled.connect(self.update_series_ui)
+
+        # Load Data
+        self.load_csv_preview()
+        self.update_series_ui()
+
+    def load_csv_preview(self):
+        try:
+            with open(self.csv_path, 'r', newline='') as f:
+                reader = csv.reader(f)
+                try:
+                    self.headers = next(reader)
+                except StopIteration:
+                    self.headers = []
+
+                self.preview_data = []
+                for i, row in enumerate(reader):
+                    if i < 5: self.preview_data.append(row)
+                    else: break
+
+            if not self.headers:
+                QMessageBox.critical(self, "Error", "CSV file is empty or invalid.")
+                self.reject()
+                return
+
+            self.table.setColumnCount(len(self.headers))
+            self.table.setHorizontalHeaderLabels(self.headers)
+            self.table.setRowCount(len(self.preview_data))
+
+            for r, row in enumerate(self.preview_data):
+                for c, val in enumerate(row):
+                    if c < len(self.headers):
+                        self.table.setItem(r, c, QTableWidgetItem(val))
+
+            self.table.resizeColumnsToContents()
+            self.populate_combos()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read CSV: {e}")
+            self.reject()
+
+    def populate_combos(self):
+        self.time_combo.clear()
+        self.time_combo.addItems(self.headers)
+        # Smart detect Time
+        for i, h in enumerate(self.headers):
+            lower = h.lower()
+            if 'time' in lower or 'ts' == lower or 'timestamp' == lower:
+                self.time_combo.setCurrentIndex(i)
+                break
+
+    def update_series_ui(self):
+        # Clear existing widgets
+        while self.series_layout.count() > 1: # Keep stretch item
+            item = self.series_layout.takeAt(0)
+            widget = item.widget()
+            if widget: widget.deleteLater()
+
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        self.series_widgets = []
+
+        if mode == "raw":
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i}")
+                layout = QHBoxLayout()
+                combo = QComboBox()
+                combo.addItem("-- None --", None)
+                for h in self.headers: combo.addItem(h, h)
+
+                layout.addWidget(QLabel("Column:"))
+                layout.addWidget(combo)
+                group.setLayout(layout)
+
+                # Insert before stretch
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append({'combo': combo})
+
+        else: # Magnitude
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i} (Vector)")
+                layout = QGridLayout()
+
+                widgets = {}
+                for idx, axis in enumerate(['X', 'Y', 'Z']):
+                    layout.addWidget(QLabel(f"{axis}:"), idx, 0)
+                    combo = QComboBox()
+                    combo.addItem("-- None --", None)
+                    for h in self.headers: combo.addItem(h, h)
+                    layout.addWidget(combo, idx, 1)
+                    widgets[axis] = combo
+
+                    # Smart Auto-select
+                    hint = ''
+                    if i == 1: hint = 'A' # Accel
+                    elif i == 2: hint = 'G' # Gyro
+                    elif i == 3: hint = 'M' # Mag or Pressure? No, Mag usually M
+
+                    target_start = (hint + axis).lower()
+                    if hint:
+                        for idx_h, h in enumerate(self.headers):
+                            if h.lower().startswith(target_start):
+                                combo.setCurrentIndex(idx_h + 1)
+                                break
+
+                group.setLayout(layout)
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append(widgets)
+
+    def validate_and_accept(self):
+        time_col = self.time_combo.currentText()
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        series_list = []
+
+        valid_series_found = False
+
+        if mode == "raw":
+            for idx, w in enumerate(self.series_widgets):
+                col = w['combo'].currentData()
+                if col:
+                    series_list.append({
+                        'type': 'raw',
+                        'col': col,
+                        'label': f"Series {idx+1} ({col})"
+                    })
+                    valid_series_found = True
+        else:
+            for idx, w in enumerate(self.series_widgets):
+                x = w['X'].currentData()
+                y = w['Y'].currentData()
+                z = w['Z'].currentData()
+                if x and y and z:
+                    series_list.append({
+                        'type': 'magnitude',
+                        'x': x, 'y': y, 'z': z,
+                        'label': f"Series {idx+1} Mag"
+                    })
+                    valid_series_found = True
+
+        if not time_col:
+            QMessageBox.warning(self, "Validation Error", "Please select a Time column.")
+            return
+
+        if not valid_series_found:
+            QMessageBox.warning(self, "Validation Error", "Please select at least one valid data series.")
+            return
+
+        self.result_config = {
+            'time_col': time_col,
+            'mode': mode,
+            'series': series_list
+        }
+        self.accept()
+
+
+class SyncPlayer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Dog Agility Sync Tool")
+        self.setStyleSheet(STYLE_SHEET)
+
+        self.cap = None
+        self.is_playing = False
+        self.video_time_ms = 0
+        self.offset_ms = 0
+        self.idx = -1
+        self.dirs = []
+        self.current_video_path = None
+        self.computer_name = platform.node()
+        self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
+        self.marker_btns = {}
+        self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
+        self.playback_rate = 0.25
+
+        self.central = QWidget()
+        self.setCentralWidget(self.central)
+        layout = QVBoxLayout(self.central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Top Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+
+        dir_btn = QPushButton("📂 Open Directory")
+        dir_btn.clicked.connect(self.choose_directory)
+        dir_btn.setFixedWidth(140)
+
+        self.file_lbl = QLabel("No File Loaded")
+        self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
+
+        self.next_btn = QPushButton("Next File ⏭")
+        self.next_btn.clicked.connect(self.next_file)
+        self.next_btn.setFixedWidth(120)
+        self.next_btn.setEnabled(False)
+
+        toolbar.addWidget(dir_btn)
+        toolbar.addWidget(self.file_lbl)
+        toolbar.addStretch()
+        toolbar.addWidget(self.next_btn)
+        layout.addLayout(toolbar)
+
+        # Splitter
+        self.splitter = QSplitter(Qt.Vertical)
+        self.video_lbl = QLabel()
+        self.video_lbl.setStyleSheet("background-color: black;")
+        self.video_lbl.setAlignment(Qt.AlignCenter)
+        self.video_lbl.setMinimumSize(400, 300)
+
+        self.spectrogram = SpectrogramCanvas(self)
+        self.plot = MatplotlibCanvas(self)
+
+        self.splitter.addWidget(self.video_lbl)
+        self.splitter.addWidget(self.spectrogram)
+        self.splitter.addWidget(self.plot)
+        layout.addWidget(self.splitter)
+
+        # Time Scroll
+        scroll_layout = QHBoxLayout()
+        self.time_slider = QSlider(Qt.Horizontal)
+        self.time_slider.sliderMoved.connect(self.scrub_video)
+        scroll_layout.addWidget(QLabel("Time:")); scroll_layout.addWidget(self.time_slider)
+        layout.addLayout(scroll_layout)
+
+        # Controls
+        ctrls = QVBoxLayout()
+        ctrls.setSpacing(12)
+
+        # Row 1: Playback & Sync
+        row_play = QHBoxLayout()
+        self.play_btn = QPushButton("▶ PLAY")
+        self.play_btn.setFixedWidth(100)
+        self.play_btn.clicked.connect(self.toggle_play)
+
+        self.offset_slider = QSlider(Qt.Horizontal)
+        self.offset_slider.setRange(0, 60000)
+        self.offset_slider.setValue(30000)
+        self.offset_slider.valueChanged.connect(self.update_offset)
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
+        self.speed_combo.setCurrentText("0.25x")
+        self.speed_combo.currentTextChanged.connect(self.change_speed)
+        self.speed_combo.setFixedWidth(70)
+
+        row_play.addWidget(self.play_btn)
+        row_play.addWidget(self.speed_combo)
+        row_play.addSpacing(20)
+        row_play.addWidget(QLabel("Sync Offset:"))
+        row_play.addWidget(self.offset_slider)
+        ctrls.addLayout(row_play)
+
+        # Row 2: Markers (Grid Layout for better look)
+        marker_layout = QHBoxLayout()
+        marker_layout.setSpacing(10)
+
+        # Stride Buttons
+        self.stride_start_btn = self.create_marker_btn('stride_start', "Stride Start (S)", "#448aff")
+        self.stride_stop_btn = self.create_marker_btn('stride_stop', "Stride Stop (F)", "#e040fb")
+
+        # Obstacle Buttons
+        self.obs_start_btn = self.create_marker_btn('obs_start', "Obstacle Start (D)", "#69f0ae")
+        self.obs_stop_btn = self.create_marker_btn('obs_stop', "Obstacle Stop (G)", "#ff5252")
+
+        marker_layout.addWidget(self.stride_start_btn)
+        marker_layout.addWidget(self.obs_start_btn)
+        marker_layout.addWidget(self.obs_stop_btn)
+        marker_layout.addWidget(self.stride_stop_btn)
+
+        ctrls.addLayout(marker_layout)
+
+        # Row 3: Actions
+        row_act = QHBoxLayout()
+        clr_btn = QPushButton("🗑 Clear Marks")
+        clr_btn.clicked.connect(self.clear_all)
+        clr_btn.setStyleSheet("background-color: #5d4037; border-color: #5d4037;")
+
+        self.save_btn = QPushButton("💾 Save Data")
+        self.save_btn.clicked.connect(self.save_data)
+        self.save_btn.setStyleSheet("background-color: #00bcd4; color: #ffffff; font-weight: bold; font-size: 14px; padding: 8px;")
+
+        self.abnormal_cb = QCheckBox("Abnormal")
+        self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
+
+        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
+        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
+        self.toggle_spec_btn.setCheckable(True)
+        self.toggle_spec_btn.setChecked(True)
+
+        row_act.addStretch()
+        row_act.addWidget(self.toggle_spec_btn)
+        row_act.addWidget(self.abnormal_cb)
+        row_act.addWidget(clr_btn)
+        row_act.addWidget(self.save_btn)
+        ctrls.addLayout(row_act)
+
+        layout.addLayout(ctrls)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(33)
+        self.audio_player.setPlaybackRate(self.playback_rate)
+
+        # Enforce initial visibility state
+        self.toggle_spectrogram()
+
+    def change_speed(self, text):
+        rate = float(text.replace('x', ''))
+        self.playback_rate = rate
+        self.audio_player.setPlaybackRate(rate)
+
+    def create_marker_btn(self, key, text, color_hex):
+        btn = QPushButton(text)
+        btn.setStyleSheet(f"border-bottom: 3px solid {color_hex}; font-weight: bold;")
+        btn.clicked.connect(lambda: self.add_mark(key))
+        btn.setToolTip("Select a file to see definition")
+        self.marker_btns[key] = btn
+        return btn
+
+    def choose_directory(self):
+        p = QFileDialog.getExistingDirectory(self, "Select Root")
+        if p:
+            self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
+            if self.dirs:
+                self.idx = 0
+                self.load_file(0)
+                self.next_btn.setEnabled(len(self.dirs) > 1)
+
+    def detect_obstacle_type(self, path):
+        path_lower = path.lower()
+        if 'jump' in path_lower: return 'jump'
+        if 'tunnel' in path_lower: return 'tunnel'
+        if 'teeter' in path_lower: return 'teeter'
+        if 'aframe' in path_lower or 'a-frame' in path_lower: return 'aframe'
+        if 'dogwalk' in path_lower: return 'dogwalk'
+        if 'weave' in path_lower: return 'weave'
+        return 'flat'
+
+    def update_tooltips(self, obs_type):
+        tips = TOOLTIPS.get(obs_type, TOOLTIPS['flat'])
+        for key, text in tips.items():
+            if key in self.marker_btns:
+                self.marker_btns[key].setToolTip(text)
+
+    def load_file(self, i):
+        self.clear_all()
+        dir_path = self.dirs[i]
+        v, c = find_video_csv_pair(dir_path)
+
+        if not v or not c:
+            QMessageBox.warning(self, "Error", f"Could not find video/CSV pair in {dir_path}")
+            return
+
+        # Update tooltips based on file name/path
+        obs_type = self.detect_obstacle_type(dir_path)
+        self.update_tooltips(obs_type)
+
+        # --- MODAL INTEGRATION ---
+        # We need to ask for column configuration if it's the first file,
+        # or perhaps re-use it? For now, let's ask every time or once?
+        # The requirement was "persistence: apply to subsequent files".
+        if not hasattr(self, 'column_config') or self.column_config is None:
+            dlg = ColumnSelectionDialog(c, self)
+            if dlg.exec_() == QDialog.Accepted:
+                self.column_config = dlg.result_config
+            else:
+                # User cancelled
+                return
+
+        df, err = load_data(c, self.column_config)
+        if df is not None:
+            self.plot.update_data(df, self.column_config)
+            if self.cap: self.cap.release()
+            self.cap = cv2.VideoCapture(v)
+            self.current_video_path = v
+            self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            self.file_lbl.setText(f"File: {os.path.basename(dir_path)} ({obs_type.upper()})")
+
+            audio_path = ensure_audio_extracted(v)
+            if audio_path:
+                self.spectrogram.update_data(audio_path)
+                url = QUrl.fromLocalFile(os.path.abspath(audio_path))
+                self.audio_player.setMedia(QMediaContent(url))
+            else:
+                self.spectrogram.update_data(None)
+                self.audio_player.setMedia(QMediaContent())
+
+            self.video_time_ms = 0
+            self.is_playing = False
+            self.play_btn.setText("▶ PLAY")
+            self.show_frame()
+        else:
+             QMessageBox.critical(self, "Error", f"Failed to load data: {err}")
+
+    def toggle_play(self):
+        self.is_playing = not self.is_playing
+        self.play_btn.setText("⏸ PAUSE" if self.is_playing else "▶ PLAY")
+        if self.is_playing:
+            self.audio_player.play()
+        else:
+            self.audio_player.pause()
+
+    def toggle_spectrogram(self):
+        self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
+
+    def update_frame(self):
+        if self.is_playing and self.cap:
+            has_audio = not self.audio_player.media().isNull()
+            ret = False
+            frame = None
+
+            if has_audio and self.audio_player.state() == QMediaPlayer.PlayingState:
+                audio_t = self.audio_player.position()
+                self.video_time_ms = audio_t
+
+                # Check drift, but only correct if significant to avoid choppy seek
+                cap_t = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+                drift = audio_t - cap_t
+
+                # If drift is large (> 400ms), seek. Otherwise just grab next frame.
+                if abs(drift) > 400:
+                    self.cap.set(cv2.CAP_PROP_POS_MSEC, audio_t)
+                elif drift > 50: # If video is behind, read an extra frame to catch up
+                     self.cap.read()
+
+                ret, frame = self.cap.read()
+            else:
+                ret, frame = self.cap.read()
+                if ret:
+                    self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+
+            if ret:
+                self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+            else:
+                self.is_playing = False
+                self.play_btn.setText("▶ PLAY")
+                self.audio_player.pause()
+
+    def scrub_video(self, val):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, val)
+            ret, frame = self.cap.read()
+            if ret:
+                self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                self.audio_player.setPosition(self.video_time_ms)
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def show_frame(self):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_MSEC, self.video_time_ms)
+            ret, frame = self.cap.read()
+            if ret:
+                self.display_img(frame)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def display_img(self, frame):
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
+        self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
+
+    def update_offset(self, val):
+        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+
+    def add_mark(self, key):
+        self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
+
+    def clear_all(self):
+        self.marks = {k: None for k in self.marks.keys()}
+        self.abnormal_cb.setChecked(False)
+        self.plot.clear_markers()
+
+    def save_data(self):
+        if self.idx == -1: return
+        log = {
+            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Directory': os.path.basename(self.dirs[self.idx]),
+            'Offset_ms': self.offset_ms,
+            'Abnormal': self.abnormal_cb.isChecked()
+        }
+        log.update({f"{k}_ms": v for k, v in self.marks.items()})
+
+        exists = os.path.exists(LOG_FILE)
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                if not exists: w.writeheader()
+                w.writerow(log)
+            self.next_file()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
+
+    def next_file(self):
+        if self.idx < len(self.dirs) - 1:
+            self.idx += 1; self.load_file(self.idx)
+        else:
+            QMessageBox.information(self, "Done", "All files in directory processed!")
+
+    def keyPressEvent(self, e):
+        mapping = {
+            Qt.Key_Space: self.toggle_play,
+            Qt.Key_S: lambda: self.add_mark('stride_start'),
+            Qt.Key_D: lambda: self.add_mark('obs_start'),
+            Qt.Key_F: lambda: self.add_mark('obs_stop'),
+            Qt.Key_G: lambda: self.add_mark('stride_stop'),
+            Qt.Key_Return: self.save_data
+        }
+        if e.key() in mapping: mapping[e.key()]()
+        else: super().keyPressEvent(e)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
+
+# --- COLUMN SELECTION DIALOG (Appended) ---
+
+
+class SyncPlayer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Dog Agility Sync Tool")
+        self.setStyleSheet(STYLE_SHEET)
+
+        self.cap = None
+        self.is_playing = False
+        self.video_time_ms = 0
+        self.offset_ms = 0
+        self.idx = -1
+        self.dirs = []
+        self.current_video_path = None
+        self.computer_name = platform.node()
+        self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
+        self.marker_btns = {}
+        self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
+        self.playback_rate = 0.25
+
+        self.central = QWidget()
+        self.setCentralWidget(self.central)
+        layout = QVBoxLayout(self.central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Top Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+
+        dir_btn = QPushButton("📂 Open Directory")
+        dir_btn.clicked.connect(self.choose_directory)
+        dir_btn.setFixedWidth(140)
+
+        self.file_lbl = QLabel("No File Loaded")
+        self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
+
+        self.next_btn = QPushButton("Next File ⏭")
+        self.next_btn.clicked.connect(self.next_file)
+        self.next_btn.setFixedWidth(120)
+        self.next_btn.setEnabled(False)
+
+        toolbar.addWidget(dir_btn)
+        toolbar.addWidget(self.file_lbl)
+        toolbar.addStretch()
+        toolbar.addWidget(self.next_btn)
+        layout.addLayout(toolbar)
+
+        # Splitter
+        self.splitter = QSplitter(Qt.Vertical)
+        self.video_lbl = QLabel()
+        self.video_lbl.setStyleSheet("background-color: black;")
+        self.video_lbl.setAlignment(Qt.AlignCenter)
+        self.video_lbl.setMinimumSize(400, 300)
+
+        self.spectrogram = SpectrogramCanvas(self)
+        self.plot = MatplotlibCanvas(self)
+
+        self.splitter.addWidget(self.video_lbl)
+        self.splitter.addWidget(self.spectrogram)
+        self.splitter.addWidget(self.plot)
+        layout.addWidget(self.splitter)
+
+        # Time Scroll
+        scroll_layout = QHBoxLayout()
+        self.time_slider = QSlider(Qt.Horizontal)
+        self.time_slider.sliderMoved.connect(self.scrub_video)
+        scroll_layout.addWidget(QLabel("Time:")); scroll_layout.addWidget(self.time_slider)
+        layout.addLayout(scroll_layout)
+
+        # Controls
+        ctrls = QVBoxLayout()
+        ctrls.setSpacing(12)
+
+        # Row 1: Playback & Sync
+        row_play = QHBoxLayout()
+        self.play_btn = QPushButton("▶ PLAY")
+        self.play_btn.setFixedWidth(100)
+        self.play_btn.clicked.connect(self.toggle_play)
+
+        self.offset_slider = QSlider(Qt.Horizontal)
+        self.offset_slider.setRange(0, 60000)
+        self.offset_slider.setValue(30000)
+        self.offset_slider.valueChanged.connect(self.update_offset)
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
+        self.speed_combo.setCurrentText("0.25x")
+        self.speed_combo.currentTextChanged.connect(self.change_speed)
+        self.speed_combo.setFixedWidth(70)
+
+        row_play.addWidget(self.play_btn)
+        row_play.addWidget(self.speed_combo)
+        row_play.addSpacing(20)
+        row_play.addWidget(QLabel("Sync Offset:"))
+        row_play.addWidget(self.offset_slider)
+        ctrls.addLayout(row_play)
+
+        # Row 2: Markers (Grid Layout for better look)
+        marker_layout = QHBoxLayout()
+        marker_layout.setSpacing(10)
+
+        # Stride Buttons
+        self.stride_start_btn = self.create_marker_btn('stride_start', "Stride Start (S)", "#448aff")
+        self.stride_stop_btn = self.create_marker_btn('stride_stop', "Stride Stop (F)", "#e040fb")
+
+        # Obstacle Buttons
+        self.obs_start_btn = self.create_marker_btn('obs_start', "Obstacle Start (D)", "#69f0ae")
+        self.obs_stop_btn = self.create_marker_btn('obs_stop', "Obstacle Stop (G)", "#ff5252")
+
+        marker_layout.addWidget(self.stride_start_btn)
+        marker_layout.addWidget(self.obs_start_btn)
+        marker_layout.addWidget(self.obs_stop_btn)
+        marker_layout.addWidget(self.stride_stop_btn)
+
+        ctrls.addLayout(marker_layout)
+
+        # Row 3: Actions
+        row_act = QHBoxLayout()
+        clr_btn = QPushButton("🗑 Clear Marks")
+        clr_btn.clicked.connect(self.clear_all)
+        clr_btn.setStyleSheet("background-color: #5d4037; border-color: #5d4037;")
+
+        self.save_btn = QPushButton("💾 Save Data")
+        self.save_btn.clicked.connect(self.save_data)
+        self.save_btn.setStyleSheet("background-color: #00bcd4; color: #ffffff; font-weight: bold; font-size: 14px; padding: 8px;")
+
+        self.abnormal_cb = QCheckBox("Abnormal")
+        self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
+
+        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
+        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
+        self.toggle_spec_btn.setCheckable(True)
+        self.toggle_spec_btn.setChecked(True)
+
+        row_act.addStretch()
+        row_act.addWidget(self.toggle_spec_btn)
+        row_act.addWidget(self.abnormal_cb)
+        row_act.addWidget(clr_btn)
+        row_act.addWidget(self.save_btn)
+        ctrls.addLayout(row_act)
+
+        layout.addLayout(ctrls)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(33)
+        self.audio_player.setPlaybackRate(self.playback_rate)
+
+        # Enforce initial visibility state
+        self.toggle_spectrogram()
+
+    def change_speed(self, text):
+        rate = float(text.replace('x', ''))
+        self.playback_rate = rate
+        self.audio_player.setPlaybackRate(rate)
+
+    def create_marker_btn(self, key, text, color_hex):
+        btn = QPushButton(text)
+        btn.setStyleSheet(f"border-bottom: 3px solid {color_hex}; font-weight: bold;")
+        btn.clicked.connect(lambda: self.add_mark(key))
+        btn.setToolTip("Select a file to see definition")
+        self.marker_btns[key] = btn
+        return btn
+
+    def choose_directory(self):
+        p = QFileDialog.getExistingDirectory(self, "Select Root")
+        if p:
+            self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
+            if self.dirs:
+                self.idx = 0
+                self.load_file(0)
+                self.next_btn.setEnabled(len(self.dirs) > 1)
+
+    def detect_obstacle_type(self, path):
+        path_lower = path.lower()
+        if 'jump' in path_lower: return 'jump'
+        if 'tunnel' in path_lower: return 'tunnel'
+        if 'teeter' in path_lower: return 'teeter'
+        if 'aframe' in path_lower or 'a-frame' in path_lower: return 'aframe'
+        if 'dogwalk' in path_lower: return 'dogwalk'
+        if 'weave' in path_lower: return 'weave'
+        return 'flat'
+
+    def update_tooltips(self, obs_type):
+        tips = TOOLTIPS.get(obs_type, TOOLTIPS['flat'])
+        for key, text in tips.items():
+            if key in self.marker_btns:
+                self.marker_btns[key].setToolTip(text)
+
+    def load_file(self, i):
+        self.clear_all()
+        dir_path = self.dirs[i]
+        v, c = find_video_csv_pair(dir_path)
+
+        if not v or not c:
+            QMessageBox.warning(self, "Error", f"Could not find video/CSV pair in {dir_path}")
+            return
+
+        # Update tooltips based on file name/path
+        obs_type = self.detect_obstacle_type(dir_path)
+        self.update_tooltips(obs_type)
+
+        # --- MODAL INTEGRATION ---
+        # We need to ask for column configuration if it's the first file,
+        # or perhaps re-use it? For now, let's ask every time or once?
+        # The requirement was "persistence: apply to subsequent files".
+        if not hasattr(self, 'column_config') or self.column_config is None:
+            dlg = ColumnSelectionDialog(c, self)
+            if dlg.exec_() == QDialog.Accepted:
+                self.column_config = dlg.result_config
+            else:
+                # User cancelled
+                return
+
+        df, err = load_data(c, self.column_config)
+        if df is not None:
+            self.plot.update_data(df, self.column_config)
+            if self.cap: self.cap.release()
+            self.cap = cv2.VideoCapture(v)
+            self.current_video_path = v
+            self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            self.file_lbl.setText(f"File: {os.path.basename(dir_path)} ({obs_type.upper()})")
+
+            audio_path = ensure_audio_extracted(v)
+            if audio_path:
+                self.spectrogram.update_data(audio_path)
+                url = QUrl.fromLocalFile(os.path.abspath(audio_path))
+                self.audio_player.setMedia(QMediaContent(url))
+            else:
+                self.spectrogram.update_data(None)
+                self.audio_player.setMedia(QMediaContent())
+
+            self.video_time_ms = 0
+            self.is_playing = False
+            self.play_btn.setText("▶ PLAY")
+            self.show_frame()
+        else:
+             QMessageBox.critical(self, "Error", f"Failed to load data: {err}")
+
+    def toggle_play(self):
+        self.is_playing = not self.is_playing
+        self.play_btn.setText("⏸ PAUSE" if self.is_playing else "▶ PLAY")
+        if self.is_playing:
+            self.audio_player.play()
+        else:
+            self.audio_player.pause()
+
+    def toggle_spectrogram(self):
+        self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
+
+    def update_frame(self):
+        if self.is_playing and self.cap:
+            has_audio = not self.audio_player.media().isNull()
+            ret = False
+            frame = None
+
+            if has_audio and self.audio_player.state() == QMediaPlayer.PlayingState:
+                audio_t = self.audio_player.position()
+                self.video_time_ms = audio_t
+
+                # Check drift, but only correct if significant to avoid choppy seek
+                cap_t = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+                drift = audio_t - cap_t
+
+                # If drift is large (> 400ms), seek. Otherwise just grab next frame.
+                if abs(drift) > 400:
+                    self.cap.set(cv2.CAP_PROP_POS_MSEC, audio_t)
+                elif drift > 50: # If video is behind, read an extra frame to catch up
+                     self.cap.read()
+
+                ret, frame = self.cap.read()
+            else:
+                ret, frame = self.cap.read()
+                if ret:
+                    self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+
+            if ret:
+                self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+            else:
+                self.is_playing = False
+                self.play_btn.setText("▶ PLAY")
+                self.audio_player.pause()
+
+    def scrub_video(self, val):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, val)
+            ret, frame = self.cap.read()
+            if ret:
+                self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                self.audio_player.setPosition(self.video_time_ms)
+                self.display_img(frame)
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def show_frame(self):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_MSEC, self.video_time_ms)
+            ret, frame = self.cap.read()
+            if ret:
+                self.display_img(frame)
+                self.spectrogram.update_cursor(self.video_time_ms)
+
+    def display_img(self, frame):
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
+        self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
+
+    def update_offset(self, val):
+        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+
+    def add_mark(self, key):
+        self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
+
+    def clear_all(self):
+        self.marks = {k: None for k in self.marks.keys()}
+        self.abnormal_cb.setChecked(False)
+        self.plot.clear_markers()
+
+    def save_data(self):
+        if self.idx == -1: return
+        log = {
+            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Directory': os.path.basename(self.dirs[self.idx]),
+            'Offset_ms': self.offset_ms,
+            'Abnormal': self.abnormal_cb.isChecked()
+        }
+        log.update({f"{k}_ms": v for k, v in self.marks.items()})
+
+        exists = os.path.exists(LOG_FILE)
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                if not exists: w.writeheader()
+                w.writerow(log)
+            self.next_file()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
+
+    def next_file(self):
+        if self.idx < len(self.dirs) - 1:
+            self.idx += 1; self.load_file(self.idx)
+        else:
+            QMessageBox.information(self, "Done", "All files in directory processed!")
+
+    def keyPressEvent(self, e):
+        mapping = {
+            Qt.Key_Space: self.toggle_play,
+            Qt.Key_S: lambda: self.add_mark('stride_start'),
+            Qt.Key_D: lambda: self.add_mark('obs_start'),
+            Qt.Key_F: lambda: self.add_mark('obs_stop'),
+            Qt.Key_G: lambda: self.add_mark('stride_stop'),
+            Qt.Key_Return: self.save_data
+        }
+        if e.key() in mapping: mapping[e.key()]()
+        else: super().keyPressEvent(e)
