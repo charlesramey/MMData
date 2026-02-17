@@ -238,7 +238,7 @@ class MatplotlibCanvas(FigureCanvas):
     def update_cursor(self, t_ms, offset_ms):
         if self.df is None: return
         idx = find_closest_data_index(self.df, t_ms + offset_ms)
-        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F']])
+        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F_norm']])
         self.draw()
 
 class SpectrogramCanvas(QGraphicsView):
@@ -347,6 +347,8 @@ class SyncPlayer(QMainWindow):
         self.offset_ms = 0
         self.idx = -1
         self.dirs = []
+        self.current_video_path = None
+        self.computer_name = platform.node()
         self.marks = {k: None for k in ['stride_start', 'obs_start', 'obs_stop', 'stride_stop']}
         self.marker_btns = {}
         self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
@@ -380,7 +382,7 @@ class SyncPlayer(QMainWindow):
         toolbar.addWidget(self.next_btn)
         layout.addLayout(toolbar)
 
-        # Splitter (Video & Plot)
+        # Splitter
         self.splitter = QSplitter(Qt.Vertical)
         self.video_lbl = QLabel()
         self.video_lbl.setStyleSheet("background-color: black;")
@@ -399,11 +401,10 @@ class SyncPlayer(QMainWindow):
         scroll_layout = QHBoxLayout()
         self.time_slider = QSlider(Qt.Horizontal)
         self.time_slider.sliderMoved.connect(self.scrub_video)
-        scroll_layout.addWidget(QLabel("Time:"))
-        scroll_layout.addWidget(self.time_slider)
+        scroll_layout.addWidget(QLabel("Time:")); scroll_layout.addWidget(self.time_slider)
         layout.addLayout(scroll_layout)
 
-        # Consolidated Controls
+        # Controls
         ctrls = QVBoxLayout()
         ctrls.setSpacing(12)
 
@@ -472,6 +473,7 @@ class SyncPlayer(QMainWindow):
         row_act.addWidget(self.toggle_spec_btn)
         row_act.addWidget(self.abnormal_cb)
         row_act.addWidget(clr_btn)
+        row_act.addWidget(self.abnormal_checkbox)
         row_act.addWidget(self.save_btn)
         ctrls.addLayout(row_act)
         
@@ -536,6 +538,7 @@ class SyncPlayer(QMainWindow):
             self.plot.update_data(df)
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
+            self.current_video_path = v
             self.time_slider.setRange(0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
             self.file_lbl.setText(f"File: {os.path.basename(dir_path)} ({obs_type.upper()})")
 
@@ -626,12 +629,10 @@ class SyncPlayer(QMainWindow):
         self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
 
     def update_offset(self, val):
-        self.offset_ms = val - 30000
-        self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
 
     def add_mark(self, key):
-        self.marks[key] = self.video_time_ms
-        self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
+        self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
 
     def clear_all(self):
         self.marks = {k: None for k in self.marks.keys()}
@@ -647,17 +648,20 @@ class SyncPlayer(QMainWindow):
             'Abnormal': self.abnormal_cb.isChecked()
         }
         log.update({f"{k}_ms": v for k, v in self.marks.items()})
+        
         exists = os.path.exists(LOG_FILE)
-        with open(LOG_FILE, 'a', newline='') as f:
-            w = csv.DictWriter(f, fieldnames=log.keys())
-            if not exists: w.writeheader()
-            w.writerow(log)
-        self.next_file()
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                if not exists: w.writeheader()
+                w.writerow(log)
+            self.next_file()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
 
     def next_file(self):
         if self.idx < len(self.dirs) - 1:
-            self.idx += 1
-            self.load_file(self.idx)
+            self.idx += 1; self.load_file(self.idx)
         else:
             QMessageBox.information(self, "Done", "All files in directory processed!")
 
@@ -666,15 +670,12 @@ class SyncPlayer(QMainWindow):
             Qt.Key_Space: self.toggle_play,
             Qt.Key_S: lambda: self.add_mark('stride_start'),
             Qt.Key_D: lambda: self.add_mark('obs_start'), 
-            Qt.Key_F: lambda: self.add_mark('stride_stop'),
-            Qt.Key_G: lambda: self.add_mark('obs_stop'),
+            Qt.Key_F: lambda: self.add_mark('obs_stop'),
+            Qt.Key_G: lambda: self.add_mark('stride_stop'),
             Qt.Key_Return: self.save_data
         }
         if e.key() in mapping: mapping[e.key()]()
         else: super().keyPressEvent(e)
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    player = SyncPlayer()
-    player.show()
-    sys.exit(app.exec_())
+    app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
