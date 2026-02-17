@@ -218,6 +218,7 @@ class MatplotlibCanvas(FigureCanvas):
 
     def reset_marker_objects(self):
         self.point_marker, = self.ax.plot([], [], 'o', color='#ff5252', markersize=6, zorder=10)
+        self.playhead_line = self.ax.axvline(x=0, color='white', lw=1.5, zorder=5) # Playhead line
         # Use 0 instead of np.nan to avoid singular matrix errors during transform
         self.m = {
             'stride_start': (self.ax.axvline(x=1, color='#448aff', ls='--', alpha=0), self.ax.text(0,0,'',color='#448aff',fontsize=8,fontweight='bold', alpha=0)),
@@ -230,6 +231,7 @@ class MatplotlibCanvas(FigureCanvas):
         for line, label in self.m.values():
             line.set_xdata([np.nan]); line.set_alpha(0); label.set_alpha(0)
         self.point_marker.set_data([], [])
+        self.playhead_line.set_xdata([0])
         self.draw()
 
     def update_data(self, df, config):
@@ -273,12 +275,13 @@ class MatplotlibCanvas(FigureCanvas):
 
     def update_cursor(self, t_ms, offset_ms):
         if self.df is None: return
+        current_time_s = (t_ms + offset_ms) / 1000.0
         idx = find_closest_data_index(self.df, t_ms + offset_ms)
-        # We need a robust Y value for the cursor.
-        # Previously it was 'Amag_F_norm' (which was likely a typo in original code, should have been Amag_F if normalized).
-        # Since we normalize everything to 0-1, 0.5 is a safe middle ground,
-        # OR we can try to find the value of the first series.
 
+        # Update Playhead Line
+        self.playhead_line.set_xdata([current_time_s])
+
+        # We need a robust Y value for the cursor point.
         y_val = 0.5
         if 'Series1_LPF' in self.df.columns:
             y_val = self.df.loc[idx, 'Series1_LPF']
