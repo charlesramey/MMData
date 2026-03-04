@@ -5,6 +5,7 @@ let filePairs = [];
 let currentIdx = -1;
 let syncLogHandle = null;
 let globalAudioBuffer = null;
+let columnConfig = null;
 
 // DOM Elements
 const btnOpenDir = document.getElementById('btnOpenDir');
@@ -95,7 +96,7 @@ fileInput.addEventListener('change', (e) => {
     finishScan();
 });
 
-function finishScan() {
+async function finishScan() {
     filePairs.sort((a, b) => a.dirName.localeCompare(b.dirName));
     if (filePairs.length > 0) {
         currentIdx = 0;
@@ -105,7 +106,21 @@ function finishScan() {
                 .then(h => syncLogHandle = h)
                 .catch(e => console.warn("Could not access sync_log.csv", e));
         }
-        loadFile(currentIdx);
+
+        // --- MODAL INTEGRATION ---
+        // Load the first CSV to get headers and show selection modal
+        try {
+            const firstCsv = await filePairs[0].csv.getFile();
+            const text = await firstCsv.text();
+
+            // Reset config and show modal
+            columnConfig = null;
+            showColumnSelectionModal(text);
+        } catch (e) {
+            console.error("Error reading first CSV for configuration", e);
+            alert("Error reading CSV file.");
+        }
+
         btnNextFile.disabled = filePairs.length <= 1;
     } else {
         alert("No video/CSV pairs found.");
@@ -597,6 +612,11 @@ function lowPassFilter(data, fs, cutoff) {
 }
 
 function processCSV(text) {
+    if (!columnConfig) {
+        console.error("No column configuration found.");
+        return;
+    }
+
     const results = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
     const data = results.data;
 
@@ -605,15 +625,24 @@ function processCSV(text) {
         return;
     }
 
-    const headers = Object.keys(data[0]);
-    const hasGyro = headers.includes('Gx') && headers.includes('Gy') && headers.includes('Gz');
-    const hasPressure = headers.includes('Pressure');
+    // --- TIME PROCESSING ---
+    const timeCol = columnConfig.timeCol;
+    const timestamps = data.map(r => r[timeCol]);
 
-    const timestamps = data.map(r => r.Timestamp);
+    // Check if time column exists and has data
+    if (timestamps.some(t => t === undefined || t === null)) {
+         console.error("Time column missing or invalid");
+         alert("Selected Time column not found in this file.");
+         return;
+    }
+
     const t0 = timestamps[0];
     const t1 = timestamps[timestamps.length - 1];
-
     let duration = t1 - t0;
+
+    // Safety check for duration
+    if (duration <= 0) duration = 1;
+
     const startT = t0;
     const labels = timestamps.map(t => (t - startT));
 
@@ -623,104 +652,65 @@ function processCSV(text) {
     const fs = 1.0 / avgDiff;
     console.log(`Detected fs: ${fs.toFixed(2)} Hz`);
 
-    const ax = data.map(r => r.Ax || 0);
-    const ay = data.map(r => r.Ay || 0);
-    const az = data.map(r => r.Az || 0);
+    // --- DATA PROCESSING ---
+    const datasets = [];
+    const colors = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03', '#d500f9']; // Cyan, Pink, Orange, Green, Purple
 
-    let gx = [], gy = [], gz = [];
-    if (hasGyro) {
-        gx = data.map(r => r.Gx || 0);
-        gy = data.map(r => r.Gy || 0);
-        gz = data.map(r => r.Gz || 0);
-    }
+    columnConfig.series.forEach((series, idx) => {
+        const color = colors[idx % colors.length];
+        let rawData = [];
+        let labelBase = series.label || `Series ${idx+1}`;
 
-    let pressure = [];
-    if (hasPressure) {
-        pressure = data.map(r => r.Pressure || 0);
-    }
+        if (series.type === 'raw') {
+            // Raw Column Mode
+            rawData = data.map(r => r[series.col] || 0);
+        } else {
+            // Magnitude Mode
+            const x = data.map(r => r[series.x] || 0);
+            const y = data.map(r => r[series.y] || 0);
+            const z = data.map(r => r[series.z] || 0);
+            rawData = calculateMagnitude(x, y, z);
+        }
 
-    let magAccel = calculateMagnitude(ax, ay, az);
-    let magGyro = hasGyro ? calculateMagnitude(gx, gy, gz) : [];
+        // Processing Chain
+        // 1. Normalize Raw (0-1) for visualization
+        const normRaw = normalizeData(rawData);
 
-    // Normalize Raw
-    let normAccelRaw = normalizeData(magAccel);
-    let normGyroRaw = hasGyro ? normalizeData(magGyro) : [];
+        // 2. LPF (5Hz)
+        const cutoff = 5; // Fixed 5Hz as per requirements
+        const lpfData = lowPassFilter(rawData, fs, cutoff);
 
-    const cutoff = 5;
-    let magAccelLPF = lowPassFilter(magAccel, fs, cutoff);
-    let magGyroLPF = hasGyro ? lowPassFilter(magGyro, fs, cutoff) : [];
+        // 3. Normalize LPF (0-1)
+        const normLPF = normalizeData(lpfData);
 
-    let pressureLPF = [];
-    if (hasPressure) {
-        pressureLPF = lowPassFilter(pressure, fs, 2.0); // 2Hz cutoff for pressure
-    }
+        // Add Datasets
+        // Raw (Dashed)
+        datasets.push({
+            label: `${labelBase} (Raw)`,
+            data: normRaw,
+            borderColor: color,
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1,
+            borderDash: [3, 3],
+            order: 2
+        });
 
-    let normAccel = normalizeData(magAccelLPF);
-    let normGyro = hasGyro ? normalizeData(magGyroLPF) : [];
-    let normPressure = hasPressure ? normalizeData(pressureLPF) : [];
+        // LPF (Solid)
+        datasets.push({
+            label: `${labelBase} (5Hz LPF)`,
+            data: normLPF,
+            borderColor: color,
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.1,
+            order: 1
+        });
+    });
 
     if (sensorChart) sensorChart.destroy();
-
-    const datasets = [
-        {
-            label: 'Accel Mag (Raw)',
-            data: normAccelRaw,
-            borderColor: '#00bcd4',
-            borderWidth: 1,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.1,
-            borderDash: [3, 3],
-            order: 2
-        },
-        {
-            label: 'Accel Mag (5Hz LPF)',
-            data: normAccel,
-            borderColor: '#00bcd4',
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.1,
-            order: 1
-        }
-    ];
-
-    if (hasGyro) {
-        datasets.push({
-            label: 'Gyro Mag (Raw)',
-            data: normGyroRaw,
-            borderColor: '#ff4081',
-            borderWidth: 1,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.1,
-            borderDash: [3, 3],
-            order: 2
-        });
-        datasets.push({
-            label: 'Gyro Mag (5Hz LPF)',
-            data: normGyro,
-            borderColor: '#ff4081',
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.1,
-            order: 1
-        });
-    }
-
-    if (hasPressure) {
-        datasets.push({
-            label: 'Pressure (2Hz LPF)',
-            data: normPressure,
-            borderColor: '#ffb74d',
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.1,
-            order: 1
-        });
-    }
 
     sensorChart = new Chart(sensorCanvas, {
         type: 'line',
@@ -857,4 +847,242 @@ async function saveData() {
         alert("Log entry downloaded (Fallback Mode).");
         btnNextFile.click();
     }
+}
+
+// --- COLUMN SELECTION MODAL LOGIC ---
+
+const modal = document.getElementById('columnSelectModal');
+const selTimeCol = document.getElementById('selTimeCol');
+const dataSelectionContainer = document.getElementById('dataSelectionContainer');
+const btnConfirmSelection = document.getElementById('btnConfirmSelection');
+const radioModes = document.getElementsByName('dataMode');
+
+if (btnConfirmSelection) {
+    btnConfirmSelection.addEventListener('click', onConfirmSelection);
+}
+
+if (radioModes) {
+    radioModes.forEach(r => {
+        r.addEventListener('change', () => {
+            if (modal._availableHeaders) {
+                updateDataSelectionUI(modal._availableHeaders);
+            }
+        });
+    });
+}
+
+function showColumnSelectionModal(csvText) {
+    // Parse just the beginning to get headers and preview
+    const results = Papa.parse(csvText, {
+        header: true,
+        preview: 5,
+        dynamicTyping: true,
+        skipEmptyLines: true
+    });
+
+    if (results.meta && results.meta.fields) {
+        const headers = results.meta.fields;
+        modal._availableHeaders = headers;
+
+        // 1. Populate Preview Table
+        const table = document.getElementById('csvPreviewTable');
+        table.innerHTML = '';
+
+        // Header Row
+        const thead = document.createElement('tr');
+        headers.forEach(h => {
+            const th = document.createElement('th');
+            th.textContent = h;
+            thead.appendChild(th);
+        });
+        table.appendChild(thead);
+
+        // Data Rows
+        results.data.forEach(row => {
+            const tr = document.createElement('tr');
+            headers.forEach(h => {
+                const td = document.createElement('td');
+                const val = row[h] !== undefined ? row[h] : '';
+                td.textContent = val;
+                tr.appendChild(td);
+            });
+            table.appendChild(tr);
+        });
+
+        // 2. Populate Time Column Select
+        selTimeCol.innerHTML = '';
+        let timeFound = false;
+        headers.forEach(h => {
+            const opt = document.createElement('option');
+            opt.value = h;
+            opt.textContent = h;
+            if (!timeFound && (h.toLowerCase().includes('time') || h.toLowerCase() === 'ts' || h.toLowerCase() === 'timestamp')) {
+                opt.selected = true;
+                timeFound = true;
+            }
+            selTimeCol.appendChild(opt);
+        });
+
+        // 3. Initialize Data Selection UI
+        updateDataSelectionUI(headers);
+
+        // Show Modal
+        modal.style.display = 'flex';
+    } else {
+        console.error("CSV Parse Error", results.errors);
+        alert("Could not parse CSV headers. Proceeding with default assumptions.");
+        loadFile(0);
+    }
+}
+
+function updateDataSelectionUI(headers) {
+    dataSelectionContainer.innerHTML = '';
+    const mode = document.querySelector('input[name="dataMode"]:checked').value;
+
+    if (mode === 'raw') {
+        // Raw Mode: 3 individual columns
+        for (let i = 1; i <= 3; i++) {
+            const group = document.createElement('div');
+            group.className = 'data-group';
+            const h4 = document.createElement('h4');
+            h4.textContent = `Series ${i}`;
+            group.appendChild(h4);
+
+            const row = document.createElement('div');
+            row.className = 'field-row';
+
+            const sel = document.createElement('select');
+            sel.className = 'col-select';
+
+            const optNone = document.createElement('option');
+            optNone.value = '';
+            optNone.textContent = '-- None --';
+            sel.appendChild(optNone);
+
+            headers.forEach(h => {
+                const opt = document.createElement('option');
+                opt.value = h;
+                opt.textContent = h;
+                sel.appendChild(opt);
+            });
+
+            row.appendChild(sel);
+            group.appendChild(row);
+            dataSelectionContainer.appendChild(group);
+        }
+    } else {
+        // Magnitude Mode: 3 groups of X,Y,Z
+        for (let i = 1; i <= 3; i++) {
+            const group = document.createElement('div');
+            group.className = 'data-group';
+            const h4 = document.createElement('h4');
+            h4.textContent = `Series ${i} (Vector)`;
+            group.appendChild(h4);
+
+            ['X', 'Y', 'Z'].forEach(axis => {
+                const row = document.createElement('div');
+                row.className = 'field-row';
+
+                const lbl = document.createElement('label');
+                lbl.textContent = axis;
+
+                const sel = document.createElement('select');
+                sel.className = 'col-select';
+                sel.dataset.axis = axis;
+
+                const optNone = document.createElement('option');
+                optNone.value = '';
+                optNone.textContent = '-- None --';
+                sel.appendChild(optNone);
+
+                // Smart Default Selection
+                let hint = '';
+                if (i === 1) hint = 'A'; // Accel
+                else if (i === 2) hint = 'G'; // Gyro
+                else if (i === 3) hint = 'M'; // Mag
+
+                const targetStart = hint + axis.toLowerCase();
+
+                headers.forEach(h => {
+                    const opt = document.createElement('option');
+                    opt.value = h;
+                    opt.textContent = h;
+                    // Try to match Ax, Ay, Az, etc.
+                    if (hint && h.startsWith(targetStart)) {
+                         opt.selected = true;
+                    }
+                    sel.appendChild(opt);
+                });
+
+                row.appendChild(lbl);
+                row.appendChild(sel);
+                group.appendChild(row);
+            });
+
+            dataSelectionContainer.appendChild(group);
+        }
+    }
+}
+
+function onConfirmSelection() {
+    const timeCol = selTimeCol.value;
+    const mode = document.querySelector('input[name="dataMode"]:checked').value;
+    const seriesList = [];
+
+    const groups = dataSelectionContainer.querySelectorAll('.data-group');
+
+    groups.forEach((g, idx) => {
+        const selects = g.querySelectorAll('select');
+
+        if (mode === 'raw') {
+            // Raw Mode: 1 select per group
+            const col = selects[0].value;
+            if (col) {
+                seriesList.push({
+                    type: 'raw',
+                    col: col,
+                    label: `Series ${idx+1} (${col})`
+                });
+            }
+        } else {
+            // Magnitude Mode: 3 selects (X, Y, Z)
+            const x = selects[0].value;
+            const y = selects[1].value;
+            const z = selects[2].value;
+
+            if (x && y && z) {
+                seriesList.push({
+                    type: 'magnitude',
+                    x: x, y: y, z: z,
+                    label: `Series ${idx+1} Mag`
+                });
+            } else if (x || y || z) {
+                // Warn if partial selection?
+                console.warn(`Series ${idx+1} is incomplete`);
+            }
+        }
+    });
+
+    if (!timeCol) {
+        alert("Please select a Time column.");
+        return;
+    }
+
+    if (seriesList.length === 0) {
+        alert("Please select at least one valid data series.");
+        return;
+    }
+
+    // Save Configuration
+    columnConfig = {
+        timeCol: timeCol,
+        mode: mode,
+        series: seriesList
+    };
+
+    console.log("Column Config Saved:", columnConfig);
+    modal.style.display = 'none';
+
+    // Start loading the first file
+    loadFile(0);
 }

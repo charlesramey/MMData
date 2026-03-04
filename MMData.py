@@ -6,7 +6,9 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem, QComboBox, QCheckBox
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem, QComboBox, QCheckBox,
+    QDialog, QTableWidget, QTableWidgetItem, QDialogButtonBox, QRadioButton, QButtonGroup,
+    QFormLayout, QGroupBox, QGridLayout, QScrollArea, QFrame, QSizePolicy
 )
 from PyQt5.QtGui import QImage, QPixmap, QFont, QPen, QColor
 from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
@@ -150,17 +152,50 @@ def apply_lowpass(data, cutoff, fs, order=4):
     y = filtfilt(b, a, data)
     return y
 
-def load_data(csv_path):
+def load_data(csv_path, config):
     try:
         df = pd.read_csv(csv_path)
         if df.empty: return None, "CSV file is empty."
     except Exception as e: return None, f"Error loading CSV: {e}"
 
-    if 'Timestamp' not in df.columns or 'Ax' not in df.columns:
-        return None, "Error: 'Timestamp' or 'Ax' column not found in CSV."
+    time_col = config.get('time_col')
+    if time_col not in df.columns:
+        return None, f"Error: Time column '{time_col}' not found."
 
-    df['Relative_Time_s'] = df['Timestamp'] - df['Timestamp'].iloc[0]
+    df['Relative_Time_s'] = df[time_col] - df[time_col].iloc[0]
     df['Relative_Time_ms'] = df['Relative_Time_s'] * 1000
+
+    # Pre-calculate series data
+    # We will store them in df as 'S1_Raw', 'S1_LPF', etc.
+    # config['series'] is a list of dicts
+
+    fs = 1.0 / np.mean(np.diff(df['Relative_Time_s'])) if len(df) > 1 else 100.0
+
+    for i, series in enumerate(config['series']):
+        idx = i + 1
+        raw_data = None
+
+        if series['type'] == 'raw':
+            col = series['col']
+            if col in df.columns:
+                raw_data = df[col].values
+        else: # magnitude
+            x, y, z = series['x'], series['y'], series['z']
+            if x in df.columns and y in df.columns and z in df.columns:
+                raw_data = np.sqrt(df[x]**2 + df[y]**2 + df[z]**2)
+
+        if raw_data is not None:
+            # Normalize Raw
+            norm_raw = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data)) if np.max(raw_data) > np.min(raw_data) else raw_data
+
+            # LPF
+            lpf_data = apply_lowpass(raw_data, 5.0, fs)
+            # Normalize LPF
+            norm_lpf = (lpf_data - np.min(lpf_data)) / (np.max(lpf_data) - np.min(lpf_data)) if np.max(lpf_data) > np.min(lpf_data) else lpf_data
+
+            df[f'Series{idx}_Raw'] = norm_raw
+            df[f'Series{idx}_LPF'] = norm_lpf
+
     return df, None
 
 def find_closest_data_index(df, target_time_ms):
@@ -183,6 +218,7 @@ class MatplotlibCanvas(FigureCanvas):
 
     def reset_marker_objects(self):
         self.point_marker, = self.ax.plot([], [], 'o', color='#ff5252', markersize=6, zorder=10)
+        self.playhead_line = self.ax.axvline(x=0, color='white', lw=1.5, zorder=5) # Playhead line
         # Use 0 instead of np.nan to avoid singular matrix errors during transform
         self.m = {
             'stride_start': (self.ax.axvline(x=1, color='#448aff', ls='--', alpha=0), self.ax.text(0,0,'',color='#448aff',fontsize=8,fontweight='bold', alpha=0)),
@@ -195,29 +231,31 @@ class MatplotlibCanvas(FigureCanvas):
         for line, label in self.m.values():
             line.set_xdata([np.nan]); line.set_alpha(0); label.set_alpha(0)
         self.point_marker.set_data([], [])
+        self.playhead_line.set_xdata([0])
         self.draw()
 
-    def update_data(self, df):
+    def update_data(self, df, config):
         self.df = df
-        mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
-        mag = (mag - np.mean(mag))/np.std(mag)
-        gmag = np.sqrt(df['Gx']**2 + df['Gy']**2 + df['Gz']**2)
-        gmag = (gmag - np.mean(gmag))/np.std(gmag)
-        diffs = np.diff(df['Relative_Time_s'])
-        fs = 1.0 / np.mean(diffs) if len(diffs) > 0 else 100.0
-        self.df['Amag_F'] = apply_lowpass(mag, 5.0, fs)
-        self.df['Gmag_F'] = apply_lowpass(gmag, 5.0, fs)
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
-        self.ax.set_facecolor('#1e1e1e')
-        self.ax.plot(df['Relative_Time_s'], mag, color='#80deea', lw=0.8, alpha=0.3)
-        self.ax.plot(df['Relative_Time_s'], self.df['Amag_F'], color='#00bcd4', lw=1.5, label='Accel (5Hz)')
-        if 'Pressure' in df.columns:
-            p = apply_lowpass(df['Pressure'].values, 2.0, fs)
-            p_s = (p - p.min()) / (p.max() - p.min()) * mag.max() if p.max() > p.min() else p
-            self.ax.plot(df['Relative_Time_s'], p_s, color='#ffb74d', lw=1.2, alpha=0.7, label='Pressure')
-        self.ax.plot(df['Relative_Time_s'], gmag, color='#f069ab', lw=0.8, alpha=0.3)
-        self.ax.plot(df['Relative_Time_s'], self.df['Gmag_F'], color='#69f0ae', lw=1.5, label='Gyro (5Hz)')
+
+        # Colors: Cyan, Pink, Orange, Green
+        colors = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03']
+
+        for i, series in enumerate(config['series']):
+            idx = i + 1
+            color = colors[i % len(colors)]
+            label_base = series.get('label', f'Series {idx}')
+
+            raw_key = f'Series{idx}_Raw'
+            lpf_key = f'Series{idx}_LPF'
+
+            if raw_key in df.columns:
+                self.ax.plot(df['Relative_Time_s'], df[raw_key], color=color, lw=1.0, label=f'{label_base} (Raw)')
+
+            if lpf_key in df.columns:
+                self.ax.plot(df['Relative_Time_s'], df[lpf_key], color=color, lw=0.8, alpha=0.6, label=f'{label_base} (5Hz LPF)')
+
         self.ax.tick_params(colors='#e0e0e0')
         self.ax.xaxis.label.set_color('#e0e0e0')
         self.ax.yaxis.label.set_color('#e0e0e0')
@@ -237,8 +275,18 @@ class MatplotlibCanvas(FigureCanvas):
 
     def update_cursor(self, t_ms, offset_ms):
         if self.df is None: return
+        current_time_s = (t_ms + offset_ms) / 1000.0
         idx = find_closest_data_index(self.df, t_ms + offset_ms)
-        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F_norm']])
+
+        # Update Playhead Line
+        self.playhead_line.set_xdata([current_time_s])
+
+        # We need a robust Y value for the cursor point.
+        y_val = 0.5
+        if 'Series1_LPF' in self.df.columns:
+            y_val = self.df.loc[idx, 'Series1_LPF']
+
+        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [y_val])
         self.draw()
 
 class SpectrogramCanvas(QGraphicsView):
@@ -335,6 +383,226 @@ class SpectrogramCanvas(QGraphicsView):
                  x = self.cursor_line.line().x1()
                  self.centerOn(x, self.scene.height()/2)
 
+class ColumnSelectionDialog(QDialog):
+    def __init__(self, csv_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Data Columns")
+        self.resize(900, 600)
+        self.csv_path = csv_path
+        self.headers = []
+        self.preview_data = []
+        self.result_config = None
+
+        main_layout = QVBoxLayout(self)
+
+        # 1. Preview
+        preview_group = QGroupBox("CSV Preview (First 5 Rows)")
+        preview_layout = QVBoxLayout()
+        self.table = QTableWidget()
+        preview_layout.addWidget(self.table)
+        preview_group.setLayout(preview_layout)
+        main_layout.addWidget(preview_group)
+
+        # 2. Config
+        config_group = QGroupBox("Configuration")
+        config_layout = QVBoxLayout()
+
+        # Time
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("Time Column:"))
+        self.time_combo = QComboBox()
+        time_layout.addWidget(self.time_combo)
+        config_layout.addLayout(time_layout)
+
+        # Mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode:"))
+        self.mode_group = QButtonGroup(self)
+        self.radio_raw = QRadioButton("Raw Columns")
+        self.radio_mag = QRadioButton("Vector Magnitude (X,Y,Z)")
+        self.radio_raw.setChecked(True)
+        self.mode_group.addButton(self.radio_raw)
+        self.mode_group.addButton(self.radio_mag)
+        mode_layout.addWidget(self.radio_raw)
+        mode_layout.addWidget(self.radio_mag)
+        mode_layout.addStretch()
+        config_layout.addLayout(mode_layout)
+
+        # Series Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(300)
+        self.series_area = QWidget()
+        self.series_layout = QVBoxLayout(self.series_area)
+        self.series_layout.setContentsMargins(0, 0, 0, 0)
+        self.series_layout.addStretch()
+        scroll.setWidget(self.series_area)
+        config_layout.addWidget(scroll)
+
+        config_group.setLayout(config_layout)
+        main_layout.addWidget(config_group)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        main_layout.addWidget(buttons)
+
+        # Connect signals
+        self.radio_raw.toggled.connect(self.update_series_ui)
+        self.radio_mag.toggled.connect(self.update_series_ui)
+
+        # Load Data
+        self.load_csv_preview()
+        self.update_series_ui()
+
+    def load_csv_preview(self):
+        try:
+            with open(self.csv_path, 'r', newline='') as f:
+                reader = csv.reader(f)
+                try:
+                    self.headers = next(reader)
+                except StopIteration:
+                    self.headers = []
+
+                self.preview_data = []
+                for i, row in enumerate(reader):
+                    if i < 5: self.preview_data.append(row)
+                    else: break
+
+            if not self.headers:
+                QMessageBox.critical(self, "Error", "CSV file is empty or invalid.")
+                self.reject()
+                return
+
+            self.table.setColumnCount(len(self.headers))
+            self.table.setHorizontalHeaderLabels(self.headers)
+            self.table.setRowCount(len(self.preview_data))
+
+            for r, row in enumerate(self.preview_data):
+                for c, val in enumerate(row):
+                    if c < len(self.headers):
+                        self.table.setItem(r, c, QTableWidgetItem(val))
+
+            self.table.resizeColumnsToContents()
+            self.populate_combos()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read CSV: {e}")
+            self.reject()
+
+    def populate_combos(self):
+        self.time_combo.clear()
+        self.time_combo.addItems(self.headers)
+        # Smart detect Time
+        for i, h in enumerate(self.headers):
+            lower = h.lower()
+            if 'time' in lower or 'ts' == lower or 'timestamp' == lower:
+                self.time_combo.setCurrentIndex(i)
+                break
+
+    def update_series_ui(self):
+        # Clear existing widgets
+        while self.series_layout.count() > 1: # Keep stretch item
+            item = self.series_layout.takeAt(0)
+            widget = item.widget()
+            if widget: widget.deleteLater()
+
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        self.series_widgets = []
+
+        if mode == "raw":
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i}")
+                layout = QHBoxLayout()
+                combo = QComboBox()
+                combo.addItem("-- None --", None)
+                for h in self.headers: combo.addItem(h, h)
+
+                layout.addWidget(QLabel("Column:"))
+                layout.addWidget(combo)
+                group.setLayout(layout)
+
+                # Insert before stretch
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append({'combo': combo})
+
+        else: # Magnitude
+            for i in range(1, 4):
+                group = QGroupBox(f"Series {i} (Vector)")
+                layout = QGridLayout()
+
+                widgets = {}
+                for idx, axis in enumerate(['X', 'Y', 'Z']):
+                    layout.addWidget(QLabel(f"{axis}:"), idx, 0)
+                    combo = QComboBox()
+                    combo.addItem("-- None --", None)
+                    for h in self.headers: combo.addItem(h, h)
+                    layout.addWidget(combo, idx, 1)
+                    widgets[axis] = combo
+
+                    # Smart Auto-select
+                    hint = ''
+                    if i == 1: hint = 'A' # Accel
+                    elif i == 2: hint = 'G' # Gyro
+                    elif i == 3: hint = 'M' # Mag or Pressure? No, Mag usually M
+
+                    target_start = (hint + axis).lower()
+                    if hint:
+                        for idx_h, h in enumerate(self.headers):
+                            if h.lower().startswith(target_start):
+                                combo.setCurrentIndex(idx_h + 1)
+                                break
+
+                group.setLayout(layout)
+                self.series_layout.insertWidget(self.series_layout.count()-1, group)
+                self.series_widgets.append(widgets)
+
+    def validate_and_accept(self):
+        time_col = self.time_combo.currentText()
+        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
+        series_list = []
+
+        valid_series_found = False
+
+        if mode == "raw":
+            for idx, w in enumerate(self.series_widgets):
+                col = w['combo'].currentData()
+                if col:
+                    series_list.append({
+                        'type': 'raw',
+                        'col': col,
+                        'label': f"Series {idx+1} ({col})"
+                    })
+                    valid_series_found = True
+        else:
+            for idx, w in enumerate(self.series_widgets):
+                x = w['X'].currentData()
+                y = w['Y'].currentData()
+                z = w['Z'].currentData()
+                if x and y and z:
+                    series_list.append({
+                        'type': 'magnitude',
+                        'x': x, 'y': y, 'z': z,
+                        'label': f"Series {idx+1} Mag"
+                    })
+                    valid_series_found = True
+
+        if not time_col:
+            QMessageBox.warning(self, "Validation Error", "Please select a Time column.")
+            return
+
+        if not valid_series_found:
+            QMessageBox.warning(self, "Validation Error", "Please select at least one valid data series.")
+            return
+
+        self.result_config = {
+            'time_col': time_col,
+            'mode': mode,
+            'series': series_list
+        }
+        self.accept()
+
 class SyncPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -353,7 +621,8 @@ class SyncPlayer(QMainWindow):
         self.marker_btns = {}
         self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
         self.playback_rate = 0.25
-        
+        self.is_saved = False
+
         self.central = QWidget()
         self.setCentralWidget(self.central)
         layout = QVBoxLayout(self.central)
@@ -473,10 +742,9 @@ class SyncPlayer(QMainWindow):
         row_act.addWidget(self.toggle_spec_btn)
         row_act.addWidget(self.abnormal_cb)
         row_act.addWidget(clr_btn)
-        row_act.addWidget(self.abnormal_checkbox)
         row_act.addWidget(self.save_btn)
         ctrls.addLayout(row_act)
-        
+
         layout.addLayout(ctrls)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
@@ -529,13 +797,29 @@ class SyncPlayer(QMainWindow):
         dir_path = self.dirs[i]
         v, c = find_video_csv_pair(dir_path)
 
+        if not v or not c:
+            QMessageBox.warning(self, "Error", f"Could not find video/CSV pair in {dir_path}")
+            return
+
         # Update tooltips based on file name/path
         obs_type = self.detect_obstacle_type(dir_path)
         self.update_tooltips(obs_type)
 
-        df, _ = load_data(c)
+        # --- MODAL INTEGRATION ---
+        # We need to ask for column configuration if it's the first file,
+        # or perhaps re-use it? For now, let's ask every time or once?
+        # The requirement was "persistence: apply to subsequent files".
+        if not hasattr(self, 'column_config') or self.column_config is None:
+            dlg = ColumnSelectionDialog(c, self)
+            if dlg.exec_() == QDialog.Accepted:
+                self.column_config = dlg.result_config
+            else:
+                # User cancelled
+                return
+
+        df, err = load_data(c, self.column_config)
         if df is not None:
-            self.plot.update_data(df)
+            self.plot.update_data(df, self.column_config)
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
             self.current_video_path = v
@@ -555,6 +839,8 @@ class SyncPlayer(QMainWindow):
             self.is_playing = False
             self.play_btn.setText("▶ PLAY")
             self.show_frame()
+        else:
+             QMessageBox.critical(self, "Error", f"Failed to load data: {err}")
 
     def toggle_play(self):
         self.is_playing = not self.is_playing
@@ -648,19 +934,23 @@ class SyncPlayer(QMainWindow):
             'Abnormal': self.abnormal_cb.isChecked()
         }
         log.update({f"{k}_ms": v for k, v in self.marks.items()})
-        
+        fieldnames = log.keys()
         exists = os.path.exists(LOG_FILE)
         try:
             with open(LOG_FILE, 'a', newline='') as f:
                 w = csv.DictWriter(f, fieldnames=fieldnames)
                 if not exists: w.writeheader()
                 w.writerow(log)
+            self.is_saved = True
             self.next_file()
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
 
     def next_file(self):
-        if self.idx < len(self.dirs) - 1:
+        if not self.is_saved:
+            QMessageBox.information(self, "Have you saved?", "Use the save button before continuing!")
+        elif self.idx < len(self.dirs) - 1:
+            self.is_saved = False
             self.idx += 1; self.load_file(self.idx)
         else:
             QMessageBox.information(self, "Done", "All files in directory processed!")
@@ -669,7 +959,7 @@ class SyncPlayer(QMainWindow):
         mapping = {
             Qt.Key_Space: self.toggle_play,
             Qt.Key_S: lambda: self.add_mark('stride_start'),
-            Qt.Key_D: lambda: self.add_mark('obs_start'), 
+            Qt.Key_D: lambda: self.add_mark('obs_start'),
             Qt.Key_F: lambda: self.add_mark('obs_stop'),
             Qt.Key_G: lambda: self.add_mark('stride_stop'),
             Qt.Key_Return: self.save_data
