@@ -708,6 +708,8 @@ class SyncPlayer(QMainWindow):
 
         self.plot_settings_btn = QPushButton("⚙️ Plot Settings")
         self.plot_settings_btn.clicked.connect(self.open_plot_settings)
+        # Avoid fixing width or setting it too small so text renders correctly
+        self.plot_settings_btn.setMinimumWidth(120)
 
         self.next_btn = QPushButton("Next File ⏭")
         self.next_btn.clicked.connect(self.next_file)
