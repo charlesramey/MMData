@@ -501,6 +501,14 @@ class ColumnSelectionDialog(QDialog):
             group = QGroupBox(f"Series {i}")
             layout = QVBoxLayout()
 
+            # Series Name (Label)
+            name_layout = QHBoxLayout()
+            name_input = QLineEdit()
+            name_input.setPlaceholderText(f"Custom Name (optional)")
+            name_layout.addWidget(QLabel("Label:"))
+            name_layout.addWidget(name_input)
+            layout.addLayout(name_layout)
+
             # Type selection
             type_layout = QHBoxLayout()
             type_combo = QComboBox()
@@ -515,7 +523,7 @@ class ColumnSelectionDialog(QDialog):
             options_layout = QVBoxLayout(options_widget)
             options_layout.setContentsMargins(0, 0, 0, 0)
 
-            widgets = {'type': type_combo, 'options_widget': options_widget}
+            widgets = {'type': type_combo, 'options_widget': options_widget, 'name_input': name_input}
 
             def clear_layout(layout):
                 if layout is not None:
@@ -599,14 +607,17 @@ class ColumnSelectionDialog(QDialog):
 
         for idx, w in enumerate(self.series_widgets):
             s_type = w['type'].currentText()
+            user_label = w['name_input'].text().strip()
+
             if s_type == "Raw Column":
                 if 'raw_combo' in w:
                     col = w['raw_combo'].currentData()
                     if col:
+                        label = user_label if user_label else f"Series {idx+1} ({col})"
                         series_list.append({
                             'type': 'raw',
                             'col': col,
-                            'label': f"Series {idx+1} ({col})"
+                            'label': label
                         })
                         valid_series_found = True
             elif s_type == "Vector Magnitude (X,Y,Z)":
@@ -615,10 +626,11 @@ class ColumnSelectionDialog(QDialog):
                     y = w['mag_Y'].currentData()
                     z = w['mag_Z'].currentData()
                     if x and y and z:
+                        label = user_label if user_label else f"Series {idx+1} Mag"
                         series_list.append({
                             'type': 'magnitude',
                             'x': x, 'y': y, 'z': z,
-                            'label': f"Series {idx+1} Mag"
+                            'label': label
                         })
                         valid_series_found = True
 
