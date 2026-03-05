@@ -706,7 +706,7 @@ class SyncPlayer(QMainWindow):
         self.toggle_spec_btn.setCheckable(True)
         self.toggle_spec_btn.setChecked(True)
 
-        self.plot_settings_btn = QPushButton("⚙️ Plot Settings")
+        self.plot_settings_btn = QPushButton("Plot Settings")
         self.plot_settings_btn.clicked.connect(self.open_plot_settings)
         # Avoid fixing width or setting it too small so text renders correctly
         self.plot_settings_btn.setMinimumWidth(120)
@@ -769,11 +769,11 @@ class SyncPlayer(QMainWindow):
 
         self.offset_minus_btn = QPushButton("-1ms")
         self.offset_minus_btn.clicked.connect(self.decrement_offset)
-        self.offset_minus_btn.setFixedWidth(50)
+        self.offset_minus_btn.setFixedWidth(60)
 
         self.offset_plus_btn = QPushButton("+1ms")
         self.offset_plus_btn.clicked.connect(self.increment_offset)
-        self.offset_plus_btn.setFixedWidth(50)
+        self.offset_plus_btn.setFixedWidth(60)
 
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
