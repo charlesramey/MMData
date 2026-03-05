@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem, QComboBox, QCheckBox,
     QDialog, QTableWidget, QTableWidgetItem, QDialogButtonBox, QRadioButton, QButtonGroup,
-    QFormLayout, QGroupBox, QGridLayout, QScrollArea, QFrame, QSizePolicy
+    QFormLayout, QGroupBox, QGridLayout, QScrollArea, QFrame, QSizePolicy, QDoubleSpinBox
 )
 from PyQt5.QtGui import QImage, QPixmap, QFont, QPen, QColor
 from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
@@ -152,23 +152,7 @@ def apply_lowpass(data, cutoff, fs, order=4):
     y = filtfilt(b, a, data)
     return y
 
-def load_data(csv_path, config):
-    try:
-        df = pd.read_csv(csv_path)
-        if df.empty: return None, "CSV file is empty."
-    except Exception as e: return None, f"Error loading CSV: {e}"
-
-    time_col = config.get('time_col')
-    if time_col not in df.columns:
-        return None, f"Error: Time column '{time_col}' not found."
-
-    df['Relative_Time_s'] = df[time_col] - df[time_col].iloc[0]
-    df['Relative_Time_ms'] = df['Relative_Time_s'] * 1000
-
-    # Pre-calculate series data
-    # We will store them in df as 'S1_Raw', 'S1_LPF', etc.
-    # config['series'] is a list of dicts
-
+def process_data_lpf(df, config, lpf_cutoff=5.0):
     fs = 1.0 / np.mean(np.diff(df['Relative_Time_s'])) if len(df) > 1 else 100.0
 
     for i, series in enumerate(config['series']):
@@ -189,12 +173,30 @@ def load_data(csv_path, config):
             norm_raw = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data)) if np.max(raw_data) > np.min(raw_data) else raw_data
 
             # LPF
-            lpf_data = apply_lowpass(raw_data, 5.0, fs)
+            lpf_data = apply_lowpass(raw_data, lpf_cutoff, fs)
             # Normalize LPF
             norm_lpf = (lpf_data - np.min(lpf_data)) / (np.max(lpf_data) - np.min(lpf_data)) if np.max(lpf_data) > np.min(lpf_data) else lpf_data
 
             df[f'Series{idx}_Raw'] = norm_raw
             df[f'Series{idx}_LPF'] = norm_lpf
+
+    return df
+
+def load_data(csv_path, config, lpf_cutoff=5.0):
+    try:
+        df = pd.read_csv(csv_path)
+        if df.empty: return None, "CSV file is empty."
+    except Exception as e: return None, f"Error loading CSV: {e}"
+
+    time_col = config.get('time_col')
+    if time_col not in df.columns:
+        return None, f"Error: Time column '{time_col}' not found."
+
+    df['Relative_Time_s'] = df[time_col] - df[time_col].iloc[0]
+    df['Relative_Time_ms'] = df['Relative_Time_s'] * 1000
+
+    # Pre-calculate series data
+    df = process_data_lpf(df, config, lpf_cutoff)
 
     return df, None
 
@@ -213,6 +215,7 @@ class MatplotlibCanvas(FigureCanvas):
         self.ax.set_facecolor('#1e1e1e')
         super().__init__(fig)
         self.setParent(parent)
+        self.df = None
         self.reset_marker_objects()
         plt.tight_layout(pad=0.25)
 
@@ -234,7 +237,7 @@ class MatplotlibCanvas(FigureCanvas):
         self.playhead_line.set_xdata([0])
         self.draw()
 
-    def update_data(self, df, config):
+    def update_data(self, df, config, show_lpf=True, lpf_freq=5.0):
         self.df = df
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
@@ -253,8 +256,8 @@ class MatplotlibCanvas(FigureCanvas):
             if raw_key in df.columns:
                 self.ax.plot(df['Relative_Time_s'], df[raw_key], color=color, lw=1.0, label=f'{label_base} (Raw)')
 
-            if lpf_key in df.columns:
-                self.ax.plot(df['Relative_Time_s'], df[lpf_key], color=color, lw=0.8, alpha=0.6, label=f'{label_base} (5Hz LPF)')
+            if show_lpf and lpf_key in df.columns:
+                self.ax.plot(df['Relative_Time_s'], df[lpf_key], color=color, lw=0.8, alpha=0.6, label=f'{label_base} ({lpf_freq}Hz LPF)')
 
         self.ax.tick_params(colors='#e0e0e0')
         self.ax.xaxis.label.set_color('#e0e0e0')
@@ -414,20 +417,6 @@ class ColumnSelectionDialog(QDialog):
         time_layout.addWidget(self.time_combo)
         config_layout.addLayout(time_layout)
 
-        # Mode
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("Mode:"))
-        self.mode_group = QButtonGroup(self)
-        self.radio_raw = QRadioButton("Raw Columns")
-        self.radio_mag = QRadioButton("Vector Magnitude (X,Y,Z)")
-        self.radio_raw.setChecked(True)
-        self.mode_group.addButton(self.radio_raw)
-        self.mode_group.addButton(self.radio_mag)
-        mode_layout.addWidget(self.radio_raw)
-        mode_layout.addWidget(self.radio_mag)
-        mode_layout.addStretch()
-        config_layout.addLayout(mode_layout)
-
         # Series Area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -447,10 +436,6 @@ class ColumnSelectionDialog(QDialog):
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         main_layout.addWidget(buttons)
-
-        # Connect signals
-        self.radio_raw.toggled.connect(self.update_series_ui)
-        self.radio_mag.toggled.connect(self.update_series_ui)
 
         # Load Data
         self.load_csv_preview()
@@ -508,44 +493,68 @@ class ColumnSelectionDialog(QDialog):
             widget = item.widget()
             if widget: widget.deleteLater()
 
-        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
         self.series_widgets = []
 
-        if mode == "raw":
-            for i in range(1, 4):
-                group = QGroupBox(f"Series {i}")
+        for i in range(1, 4):
+            group = QGroupBox(f"Series {i}")
+            layout = QVBoxLayout()
+
+            # Type selection
+            type_layout = QHBoxLayout()
+            type_combo = QComboBox()
+            type_combo.addItems(["None", "Raw Column", "Vector Magnitude (X,Y,Z)"])
+            type_layout.addWidget(QLabel("Type:"))
+            type_layout.addWidget(type_combo)
+            type_layout.addStretch()
+            layout.addLayout(type_layout)
+
+            # Options container
+            options_widget = QWidget()
+            options_layout = QVBoxLayout(options_widget)
+            options_layout.setContentsMargins(0, 0, 0, 0)
+
+            widgets = {'type': type_combo, 'options_widget': options_widget}
+
+            def clear_layout(layout):
+                if layout is not None:
+                    while layout.count():
+                        item = layout.takeAt(0)
+                        widget = item.widget()
+                        if widget is not None:
+                            widget.deleteLater()
+                        else:
+                            clear_layout(item.layout())
+
+            def create_raw_ui(w=widgets, i_idx=i):
+                clear_layout(w['options_widget'].layout())
+
                 layout = QHBoxLayout()
                 combo = QComboBox()
                 combo.addItem("-- None --", None)
                 for h in self.headers: combo.addItem(h, h)
-
                 layout.addWidget(QLabel("Column:"))
                 layout.addWidget(combo)
-                group.setLayout(layout)
+                layout.addStretch()
+                w['options_widget'].layout().addLayout(layout)
+                w['raw_combo'] = combo
 
-                # Insert before stretch
-                self.series_layout.insertWidget(self.series_layout.count()-1, group)
-                self.series_widgets.append({'combo': combo})
+            def create_mag_ui(w=widgets, i_idx=i):
+                clear_layout(w['options_widget'].layout())
 
-        else: # Magnitude
-            for i in range(1, 4):
-                group = QGroupBox(f"Series {i} (Vector)")
                 layout = QGridLayout()
-
-                widgets = {}
                 for idx, axis in enumerate(['X', 'Y', 'Z']):
                     layout.addWidget(QLabel(f"{axis}:"), idx, 0)
                     combo = QComboBox()
                     combo.addItem("-- None --", None)
                     for h in self.headers: combo.addItem(h, h)
                     layout.addWidget(combo, idx, 1)
-                    widgets[axis] = combo
+                    w[f'mag_{axis}'] = combo
 
                     # Smart Auto-select
                     hint = ''
-                    if i == 1: hint = 'A' # Accel
-                    elif i == 2: hint = 'G' # Gyro
-                    elif i == 3: hint = 'M' # Mag or Pressure? No, Mag usually M
+                    if i_idx == 1: hint = 'A' # Accel
+                    elif i_idx == 2: hint = 'G' # Gyro
+                    elif i_idx == 3: hint = 'M' # Mag or Pressure? No, Mag usually M
 
                     target_start = (hint + axis).lower()
                     if hint:
@@ -553,40 +562,63 @@ class ColumnSelectionDialog(QDialog):
                             if h.lower().startswith(target_start):
                                 combo.setCurrentIndex(idx_h + 1)
                                 break
+                w['options_widget'].layout().addLayout(layout)
 
-                group.setLayout(layout)
-                self.series_layout.insertWidget(self.series_layout.count()-1, group)
-                self.series_widgets.append(widgets)
+            def on_type_changed(text, w=widgets, i_idx=i):
+                if text == "Raw Column":
+                    create_raw_ui(w, i_idx)
+                    w['options_widget'].show()
+                elif text == "Vector Magnitude (X,Y,Z)":
+                    create_mag_ui(w, i_idx)
+                    w['options_widget'].show()
+                else:
+                    clear_layout(w['options_widget'].layout())
+                    w['options_widget'].hide()
+
+            type_combo.currentTextChanged.connect(on_type_changed)
+
+            layout.addWidget(options_widget)
+            group.setLayout(layout)
+            self.series_layout.insertWidget(self.series_layout.count()-1, group)
+            self.series_widgets.append(widgets)
+
+            # Default to Raw for Series 1, None for others to start
+            if i == 1:
+                type_combo.setCurrentText("Raw Column")
+            else:
+                type_combo.setCurrentText("None")
+                options_widget.hide()
 
     def validate_and_accept(self):
         time_col = self.time_combo.currentText()
-        mode = "raw" if self.radio_raw.isChecked() else "magnitude"
         series_list = []
 
         valid_series_found = False
 
-        if mode == "raw":
-            for idx, w in enumerate(self.series_widgets):
-                col = w['combo'].currentData()
-                if col:
-                    series_list.append({
-                        'type': 'raw',
-                        'col': col,
-                        'label': f"Series {idx+1} ({col})"
-                    })
-                    valid_series_found = True
-        else:
-            for idx, w in enumerate(self.series_widgets):
-                x = w['X'].currentData()
-                y = w['Y'].currentData()
-                z = w['Z'].currentData()
-                if x and y and z:
-                    series_list.append({
-                        'type': 'magnitude',
-                        'x': x, 'y': y, 'z': z,
-                        'label': f"Series {idx+1} Mag"
-                    })
-                    valid_series_found = True
+        for idx, w in enumerate(self.series_widgets):
+            s_type = w['type'].currentText()
+            if s_type == "Raw Column":
+                if 'raw_combo' in w:
+                    col = w['raw_combo'].currentData()
+                    if col:
+                        series_list.append({
+                            'type': 'raw',
+                            'col': col,
+                            'label': f"Series {idx+1} ({col})"
+                        })
+                        valid_series_found = True
+            elif s_type == "Vector Magnitude (X,Y,Z)":
+                if 'mag_X' in w and 'mag_Y' in w and 'mag_Z' in w:
+                    x = w['mag_X'].currentData()
+                    y = w['mag_Y'].currentData()
+                    z = w['mag_Z'].currentData()
+                    if x and y and z:
+                        series_list.append({
+                            'type': 'magnitude',
+                            'x': x, 'y': y, 'z': z,
+                            'label': f"Series {idx+1} Mag"
+                        })
+                        valid_series_found = True
 
         if not time_col:
             QMessageBox.warning(self, "Validation Error", "Please select a Time column.")
@@ -598,10 +630,36 @@ class ColumnSelectionDialog(QDialog):
 
         self.result_config = {
             'time_col': time_col,
-            'mode': mode,
             'series': series_list
         }
         self.accept()
+
+class PlotSettingsDialog(QDialog):
+    def __init__(self, current_show_lpf, current_lpf_freq, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Plot Settings")
+
+        layout = QVBoxLayout(self)
+
+        # Show LPF
+        self.show_lpf_cb = QCheckBox("Show LPF Lines")
+        self.show_lpf_cb.setChecked(current_show_lpf)
+        layout.addWidget(self.show_lpf_cb)
+
+        # LPF Frequency
+        freq_layout = QHBoxLayout()
+        freq_layout.addWidget(QLabel("LPF Cutoff Frequency (Hz):"))
+        self.lpf_spinbox = QDoubleSpinBox()
+        self.lpf_spinbox.setRange(0.1, 50.0)
+        self.lpf_spinbox.setSingleStep(0.1)
+        self.lpf_spinbox.setValue(current_lpf_freq)
+        freq_layout.addWidget(self.lpf_spinbox)
+        layout.addLayout(freq_layout)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 class SyncPlayer(QMainWindow):
     def __init__(self):
@@ -622,6 +680,9 @@ class SyncPlayer(QMainWindow):
         self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
         self.playback_rate = 0.25
         self.is_saved = False
+        self.show_lpf = True
+        self.lpf_freq = 5.0
+        self.current_df = None
 
         self.central = QWidget()
         self.setCentralWidget(self.central)
@@ -640,6 +701,16 @@ class SyncPlayer(QMainWindow):
         self.file_lbl = QLabel("No File Loaded")
         self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
 
+        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
+        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
+        self.toggle_spec_btn.setCheckable(True)
+        self.toggle_spec_btn.setChecked(True)
+
+        self.plot_settings_btn = QPushButton("Plot Settings")
+        self.plot_settings_btn.clicked.connect(self.open_plot_settings)
+        # Avoid fixing width or setting it too small so text renders correctly
+        self.plot_settings_btn.setMinimumWidth(120)
+
         self.next_btn = QPushButton("Next File ⏭")
         self.next_btn.clicked.connect(self.next_file)
         self.next_btn.setFixedWidth(120)
@@ -648,6 +719,8 @@ class SyncPlayer(QMainWindow):
         toolbar.addWidget(dir_btn)
         toolbar.addWidget(self.file_lbl)
         toolbar.addStretch()
+        toolbar.addWidget(self.toggle_spec_btn)
+        toolbar.addWidget(self.plot_settings_btn)
         toolbar.addWidget(self.next_btn)
         layout.addLayout(toolbar)
 
@@ -660,10 +733,16 @@ class SyncPlayer(QMainWindow):
 
         self.spectrogram = SpectrogramCanvas(self)
         self.plot = MatplotlibCanvas(self)
+        self.plot_widget = QWidget()
+        plot_layout = QVBoxLayout(self.plot_widget)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        self.plot_toolbar = NavigationToolbar(self.plot, self.plot_widget)
+        plot_layout.addWidget(self.plot_toolbar)
+        plot_layout.addWidget(self.plot)
 
         self.splitter.addWidget(self.video_lbl)
         self.splitter.addWidget(self.spectrogram)
-        self.splitter.addWidget(self.plot)
+        self.splitter.addWidget(self.plot_widget)
         layout.addWidget(self.splitter)
 
         # Time Scroll
@@ -688,6 +767,14 @@ class SyncPlayer(QMainWindow):
         self.offset_slider.setValue(30000)
         self.offset_slider.valueChanged.connect(self.update_offset)
 
+        self.offset_minus_btn = QPushButton("-1ms")
+        self.offset_minus_btn.clicked.connect(self.decrement_offset)
+        self.offset_minus_btn.setFixedWidth(60)
+
+        self.offset_plus_btn = QPushButton("+1ms")
+        self.offset_plus_btn.clicked.connect(self.increment_offset)
+        self.offset_plus_btn.setFixedWidth(60)
+
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
         self.speed_combo.setCurrentText("0.25x")
@@ -698,7 +785,9 @@ class SyncPlayer(QMainWindow):
         row_play.addWidget(self.speed_combo)
         row_play.addSpacing(20)
         row_play.addWidget(QLabel("Sync Offset:"))
+        row_play.addWidget(self.offset_minus_btn)
         row_play.addWidget(self.offset_slider)
+        row_play.addWidget(self.offset_plus_btn)
         ctrls.addLayout(row_play)
 
         # Row 2: Markers (Grid Layout for better look)
@@ -733,13 +822,7 @@ class SyncPlayer(QMainWindow):
         self.abnormal_cb = QCheckBox("Abnormal")
         self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
 
-        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
-        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
-        self.toggle_spec_btn.setCheckable(True)
-        self.toggle_spec_btn.setChecked(True)
-
         row_act.addStretch()
-        row_act.addWidget(self.toggle_spec_btn)
         row_act.addWidget(self.abnormal_cb)
         row_act.addWidget(clr_btn)
         row_act.addWidget(self.save_btn)
@@ -817,9 +900,10 @@ class SyncPlayer(QMainWindow):
                 # User cancelled
                 return
 
-        df, err = load_data(c, self.column_config)
+        df, err = load_data(c, self.column_config, self.lpf_freq)
         if df is not None:
-            self.plot.update_data(df, self.column_config)
+            self.current_df = df
+            self.plot.update_data(df, self.column_config, self.show_lpf, self.lpf_freq)
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
             self.current_video_path = v
@@ -849,6 +933,24 @@ class SyncPlayer(QMainWindow):
             self.audio_player.play()
         else:
             self.audio_player.pause()
+
+    def open_plot_settings(self):
+        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, self)
+        if dlg.exec_() == QDialog.Accepted:
+            new_show_lpf = dlg.show_lpf_cb.isChecked()
+            new_lpf_freq = dlg.lpf_spinbox.value()
+
+            recalculate_lpf = False
+            if self.lpf_freq != new_lpf_freq:
+                recalculate_lpf = True
+
+            self.show_lpf = new_show_lpf
+            self.lpf_freq = new_lpf_freq
+
+            if self.current_df is not None and hasattr(self, 'column_config'):
+                if recalculate_lpf:
+                    self.current_df = process_data_lpf(self.current_df, self.column_config, self.lpf_freq)
+                self.plot.update_data(self.current_df, self.column_config, self.show_lpf, self.lpf_freq)
 
     def toggle_spectrogram(self):
         self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
@@ -916,6 +1018,16 @@ class SyncPlayer(QMainWindow):
 
     def update_offset(self, val):
         self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+
+    def decrement_offset(self):
+        val = self.offset_slider.value()
+        if val > self.offset_slider.minimum():
+            self.offset_slider.setValue(val - 1)
+
+    def increment_offset(self):
+        val = self.offset_slider.value()
+        if val < self.offset_slider.maximum():
+            self.offset_slider.setValue(val + 1)
 
     def add_mark(self, key):
         self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
