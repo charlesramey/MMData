@@ -16,6 +16,7 @@ import sys
 import subprocess
 import os
 import csv
+import json
 import platform  
 import time      
 from datetime import datetime
@@ -85,6 +86,7 @@ if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
 LOG_FILE = os.path.join(LOG_DIR, 'sync_log.csv')
+CONFIG_FILE = os.path.join(LOG_DIR, 'column_config.json')
 # ---------------------
 
 STYLE_SHEET = """
@@ -387,7 +389,7 @@ class SpectrogramCanvas(QGraphicsView):
                  self.centerOn(x, self.scene.height()/2)
 
 class ColumnSelectionDialog(QDialog):
-    def __init__(self, csv_path, parent=None):
+    def __init__(self, csv_path, initial_config=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Select Data Columns")
         self.resize(900, 600)
@@ -395,6 +397,7 @@ class ColumnSelectionDialog(QDialog):
         self.headers = []
         self.preview_data = []
         self.result_config = None
+        self.initial_config = initial_config
 
         main_layout = QVBoxLayout(self)
 
@@ -440,6 +443,10 @@ class ColumnSelectionDialog(QDialog):
         # Load Data
         self.load_csv_preview()
         self.update_series_ui()
+
+        # Apply initial config if provided
+        if self.initial_config:
+            self.apply_initial_config()
 
     def load_csv_preview(self):
         try:
@@ -499,6 +506,14 @@ class ColumnSelectionDialog(QDialog):
             group = QGroupBox(f"Series {i}")
             layout = QVBoxLayout()
 
+            # Series Name (Label)
+            name_layout = QHBoxLayout()
+            name_input = QLineEdit()
+            name_input.setPlaceholderText(f"Custom Name (optional)")
+            name_layout.addWidget(QLabel("Label:"))
+            name_layout.addWidget(name_input)
+            layout.addLayout(name_layout)
+
             # Type selection
             type_layout = QHBoxLayout()
             type_combo = QComboBox()
@@ -513,7 +528,7 @@ class ColumnSelectionDialog(QDialog):
             options_layout = QVBoxLayout(options_widget)
             options_layout.setContentsMargins(0, 0, 0, 0)
 
-            widgets = {'type': type_combo, 'options_widget': options_widget}
+            widgets = {'type': type_combo, 'options_widget': options_widget, 'name_input': name_input}
 
             def clear_layout(layout):
                 if layout is not None:
@@ -589,6 +604,50 @@ class ColumnSelectionDialog(QDialog):
                 type_combo.setCurrentText("None")
                 options_widget.hide()
 
+    def apply_initial_config(self):
+        # Apply Time column
+        time_col = self.initial_config.get('time_col')
+        if time_col:
+            idx = self.time_combo.findText(time_col)
+            if idx >= 0:
+                self.time_combo.setCurrentIndex(idx)
+
+        # Apply Series configuration
+        series_conf = self.initial_config.get('series', [])
+
+        for i, conf in enumerate(series_conf):
+            if i >= len(self.series_widgets):
+                break
+
+            w = self.series_widgets[i]
+            s_type = conf.get('type')
+
+            # Apply Label if it doesn't match the auto-generated ones
+            label = conf.get('label', '')
+            auto_labels = [f"Series {i+1} ({conf.get('col', '')})", f"Series {i+1} Mag"]
+            if label and label not in auto_labels:
+                w['name_input'].setText(label)
+
+            if s_type == 'raw':
+                w['type'].setCurrentText("Raw Column")
+                col = conf.get('col')
+                if col and 'raw_combo' in w:
+                    idx = w['raw_combo'].findText(col)
+                    if idx >= 0:
+                        w['raw_combo'].setCurrentIndex(idx)
+
+            elif s_type == 'magnitude':
+                w['type'].setCurrentText("Vector Magnitude (X,Y,Z)")
+                for axis in ['x', 'y', 'z']:
+                    col = conf.get(axis)
+                    combo_key = f"mag_{axis.upper()}"
+                    if col and combo_key in w:
+                        idx = w[combo_key].findText(col)
+                        if idx >= 0:
+                            w[combo_key].setCurrentIndex(idx)
+            else:
+                w['type'].setCurrentText("None")
+
     def validate_and_accept(self):
         time_col = self.time_combo.currentText()
         series_list = []
@@ -597,14 +656,17 @@ class ColumnSelectionDialog(QDialog):
 
         for idx, w in enumerate(self.series_widgets):
             s_type = w['type'].currentText()
+            user_label = w['name_input'].text().strip()
+
             if s_type == "Raw Column":
                 if 'raw_combo' in w:
                     col = w['raw_combo'].currentData()
                     if col:
+                        label = user_label if user_label else f"Series {idx+1} ({col})"
                         series_list.append({
                             'type': 'raw',
                             'col': col,
-                            'label': f"Series {idx+1} ({col})"
+                            'label': label
                         })
                         valid_series_found = True
             elif s_type == "Vector Magnitude (X,Y,Z)":
@@ -613,10 +675,11 @@ class ColumnSelectionDialog(QDialog):
                     y = w['mag_Y'].currentData()
                     z = w['mag_Z'].currentData()
                     if x and y and z:
+                        label = user_label if user_label else f"Series {idx+1} Mag"
                         series_list.append({
                             'type': 'magnitude',
                             'x': x, 'y': y, 'z': z,
-                            'label': f"Series {idx+1} Mag"
+                            'label': label
                         })
                         valid_series_found = True
 
@@ -706,7 +769,7 @@ class SyncPlayer(QMainWindow):
         self.toggle_spec_btn.setCheckable(True)
         self.toggle_spec_btn.setChecked(True)
 
-        self.plot_settings_btn = QPushButton("Plot Settings")
+        self.plot_settings_btn = QPushButton("⚙️ Plot Settings")
         self.plot_settings_btn.clicked.connect(self.open_plot_settings)
         # Avoid fixing width or setting it too small so text renders correctly
         self.plot_settings_btn.setMinimumWidth(120)
@@ -769,11 +832,11 @@ class SyncPlayer(QMainWindow):
 
         self.offset_minus_btn = QPushButton("-1ms")
         self.offset_minus_btn.clicked.connect(self.decrement_offset)
-        self.offset_minus_btn.setFixedWidth(60)
+        self.offset_minus_btn.setFixedWidth(50)
 
         self.offset_plus_btn = QPushButton("+1ms")
         self.offset_plus_btn.clicked.connect(self.increment_offset)
-        self.offset_plus_btn.setFixedWidth(60)
+        self.offset_plus_btn.setFixedWidth(50)
 
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
@@ -889,16 +952,54 @@ class SyncPlayer(QMainWindow):
         self.update_tooltips(obs_type)
 
         # --- MODAL INTEGRATION ---
-        # We need to ask for column configuration if it's the first file,
-        # or perhaps re-use it? For now, let's ask every time or once?
-        # The requirement was "persistence: apply to subsequent files".
         if not hasattr(self, 'column_config') or self.column_config is None:
-            dlg = ColumnSelectionDialog(c, self)
-            if dlg.exec_() == QDialog.Accepted:
-                self.column_config = dlg.result_config
-            else:
-                # User cancelled
-                return
+            use_saved = False
+            if os.path.exists(CONFIG_FILE):
+                try:
+                    with open(CONFIG_FILE, 'r') as f:
+                        saved_config = json.load(f)
+
+                    # Format summary of saved config
+                    summary = f"Time Column: {saved_config.get('time_col')}\n\nSeries:\n"
+                    for s in saved_config.get('series', []):
+                        if s['type'] == 'raw':
+                            summary += f"- {s['label']}: Raw Column ({s['col']})\n"
+                        else:
+                            summary += f"- {s['label']}: Vector Mag (X:{s['x']}, Y:{s['y']}, Z:{s['z']})\n"
+
+                    reply = QMessageBox.question(
+                        self, "Saved Configuration Found",
+                        f"A previously saved configuration was found:\n\n{summary}\nWould you like to use this configuration?",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+
+                    if reply == QMessageBox.Yes:
+                        self.column_config = saved_config
+                        use_saved = True
+                except Exception as e:
+                    print(f"Error reading saved config: {e}")
+
+            if not use_saved:
+                saved_config = None
+                if os.path.exists(CONFIG_FILE):
+                    try:
+                        with open(CONFIG_FILE, 'r') as f:
+                            saved_config = json.load(f)
+                    except:
+                        pass
+
+                # Pass parent=None to prevent matplotlib global key event hooks
+                # from duplicating line edit inputs or blocking backspace.
+                dlg = ColumnSelectionDialog(c, initial_config=saved_config, parent=None)
+                if dlg.exec_() == QDialog.Accepted:
+                    self.column_config = dlg.result_config
+                    try:
+                        with open(CONFIG_FILE, 'w') as f:
+                            json.dump(self.column_config, f, indent=4)
+                    except Exception as e:
+                        print(f"Error saving config: {e}")
+                else:
+                    return
 
         df, err = load_data(c, self.column_config, self.lpf_freq)
         if df is not None:
@@ -935,7 +1036,8 @@ class SyncPlayer(QMainWindow):
             self.audio_player.pause()
 
     def open_plot_settings(self):
-        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, self)
+        # Pass parent=None for similar reasons
+        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, parent=None)
         if dlg.exec_() == QDialog.Accepted:
             new_show_lpf = dlg.show_lpf_cb.isChecked()
             new_lpf_freq = dlg.lpf_spinbox.value()
@@ -951,6 +1053,12 @@ class SyncPlayer(QMainWindow):
                 if recalculate_lpf:
                     self.current_df = process_data_lpf(self.current_df, self.column_config, self.lpf_freq)
                 self.plot.update_data(self.current_df, self.column_config, self.show_lpf, self.lpf_freq)
+
+                # Restore playhead position and markers after clearing and redrawing plot
+                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                for key, time_ms in self.marks.items():
+                    if time_ms is not None:
+                        self.plot.set_marker(key, time_ms, self.offset_ms)
 
     def toggle_spectrogram(self):
         self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
@@ -1068,16 +1176,21 @@ class SyncPlayer(QMainWindow):
             QMessageBox.information(self, "Done", "All files in directory processed!")
 
     def keyPressEvent(self, e):
-        mapping = {
-            Qt.Key_Space: self.toggle_play,
-            Qt.Key_S: lambda: self.add_mark('stride_start'),
-            Qt.Key_D: lambda: self.add_mark('obs_start'),
-            Qt.Key_F: lambda: self.add_mark('obs_stop'),
-            Qt.Key_G: lambda: self.add_mark('stride_stop'),
-            Qt.Key_Return: self.save_data
-        }
-        if e.key() in mapping: mapping[e.key()]()
-        else: super().keyPressEvent(e)
+        # Only handle these shortcuts if the main window is active and no dialog is open/focused
+        if not self.focusWidget() or not isinstance(self.focusWidget(), QLineEdit):
+            mapping = {
+                Qt.Key_Space: self.toggle_play,
+                Qt.Key_S: lambda: self.add_mark('stride_start'),
+                Qt.Key_D: lambda: self.add_mark('obs_start'),
+                Qt.Key_F: lambda: self.add_mark('obs_stop'),
+                Qt.Key_G: lambda: self.add_mark('stride_stop'),
+                Qt.Key_Return: self.save_data
+            }
+            if e.key() in mapping:
+                mapping[e.key()]()
+                return
+
+        super().keyPressEvent(e)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
