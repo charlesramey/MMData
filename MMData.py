@@ -217,6 +217,23 @@ class MatplotlibCanvas(FigureCanvas):
         self.ax.set_facecolor('#1e1e1e')
         super().__init__(fig)
         self.setParent(parent)
+
+        # Disable matplotlib default keymap bindings to prevent intercepting
+        # text input in QLineEdits elsewhere in the application
+        try:
+            # First try the newer matplotlib callback registry dictionary structure
+            cids = list(self.figure.canvas.callbacks.callbacks.get('key_press_event', {}).keys())
+            for cid in cids:
+                self.figure.canvas.mpl_disconnect(cid)
+        except AttributeError:
+            # Fallback for older/different matplotlib versions or just bypass if it fails
+            pass
+
+        # Alternatively, clearing plt.rcParams keymaps globally helps prevent this
+        for key in list(plt.rcParams.keys()):
+            if key.startswith('keymap.'):
+                plt.rcParams[key] = []
+
         self.df = None
         self.reset_marker_objects()
         plt.tight_layout(pad=0.25)
