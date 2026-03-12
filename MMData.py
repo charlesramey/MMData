@@ -239,7 +239,9 @@ class MatplotlibCanvas(FigureCanvas):
         self.playhead_line.set_xdata([0])
         self.draw()
 
-    def update_data(self, df, config, show_lpf=True, lpf_freq=5.0):
+    def update_data(self, df, config, show_lpf=True, lpf_freq=5.0, show_series=None):
+        if show_series is None:
+            show_series = [True, True, True]
         self.df = df
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
@@ -248,6 +250,10 @@ class MatplotlibCanvas(FigureCanvas):
         colors = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03']
 
         for i, series in enumerate(config['series']):
+            # Skip drawing if this series is toggled off
+            if i < len(show_series) and not show_series[i]:
+                continue
+
             idx = i + 1
             color = colors[i % len(colors)]
             label_base = series.get('label', f'Series {idx}')
@@ -698,11 +704,28 @@ class ColumnSelectionDialog(QDialog):
         self.accept()
 
 class PlotSettingsDialog(QDialog):
-    def __init__(self, current_show_lpf, current_lpf_freq, parent=None):
+    def __init__(self, current_show_lpf, current_lpf_freq, current_show_series, column_config, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Plot Settings")
 
         layout = QVBoxLayout(self)
+
+        # Series Visibility
+        series_group = QGroupBox("Series Visibility")
+        series_layout = QVBoxLayout()
+        self.series_cbs = []
+        if column_config and 'series' in column_config:
+            for i, series in enumerate(column_config['series']):
+                if series['type'] != 'None': # Only show valid series
+                    label = series.get('label', f'Series {i+1}')
+                    cb = QCheckBox(f"Show {label}")
+                    # Ensure we don't index out of bounds if config has fewer than 3 elements
+                    is_checked = current_show_series[i] if i < len(current_show_series) else True
+                    cb.setChecked(is_checked)
+                    series_layout.addWidget(cb)
+                    self.series_cbs.append((i, cb))
+        series_group.setLayout(series_layout)
+        layout.addWidget(series_group)
 
         # Show LPF
         self.show_lpf_cb = QCheckBox("Show LPF Lines")
@@ -724,6 +747,14 @@ class PlotSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def get_series_visibility(self):
+        # We need to return a list of booleans based on checkboxes
+        result = [True, True, True] # Default
+        for i, cb in self.series_cbs:
+            if i < len(result):
+                result[i] = cb.isChecked()
+        return result
+
 class SyncPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -744,6 +775,7 @@ class SyncPlayer(QMainWindow):
         self.playback_rate = 0.25
         self.is_saved = False
         self.show_lpf = True
+        self.show_series = [True, True, True]
         self.lpf_freq = 5.0
         self.current_df = None
 
@@ -1004,7 +1036,7 @@ class SyncPlayer(QMainWindow):
         df, err = load_data(c, self.column_config, self.lpf_freq)
         if df is not None:
             self.current_df = df
-            self.plot.update_data(df, self.column_config, self.show_lpf, self.lpf_freq)
+            self.plot.update_data(df, self.column_config, self.show_lpf, self.lpf_freq, self.show_series)
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
             self.current_video_path = v
@@ -1037,10 +1069,12 @@ class SyncPlayer(QMainWindow):
 
     def open_plot_settings(self):
         # Pass parent=None for similar reasons
-        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, parent=None)
+        config = getattr(self, 'column_config', None)
+        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, self.show_series, config, parent=None)
         if dlg.exec_() == QDialog.Accepted:
             new_show_lpf = dlg.show_lpf_cb.isChecked()
             new_lpf_freq = dlg.lpf_spinbox.value()
+            new_show_series = dlg.get_series_visibility()
 
             recalculate_lpf = False
             if self.lpf_freq != new_lpf_freq:
@@ -1048,11 +1082,12 @@ class SyncPlayer(QMainWindow):
 
             self.show_lpf = new_show_lpf
             self.lpf_freq = new_lpf_freq
+            self.show_series = new_show_series
 
             if self.current_df is not None and hasattr(self, 'column_config'):
                 if recalculate_lpf:
                     self.current_df = process_data_lpf(self.current_df, self.column_config, self.lpf_freq)
-                self.plot.update_data(self.current_df, self.column_config, self.show_lpf, self.lpf_freq)
+                self.plot.update_data(self.current_df, self.column_config, self.show_lpf, self.lpf_freq, self.show_series)
 
                 # Restore playhead position and markers after clearing and redrawing plot
                 self.plot.update_cursor(self.video_time_ms, self.offset_ms)
