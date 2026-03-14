@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Qt5Agg') # Ensure we are using the correct backend without pyplot state machine side effects
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -211,32 +214,19 @@ def find_closest_data_index(df, target_time_ms):
 
 class MatplotlibCanvas(FigureCanvas):
     def __init__(self, parent=None):
+        # Apply dark background style to rcParams explicitly instead of using pyplot
         plt.style.use('dark_background')
-        fig, self.ax = plt.subplots(figsize=(6, 4), dpi=100)
-        fig.patch.set_facecolor('#2b2b2b')
-        self.ax.set_facecolor('#1e1e1e')
-        super().__init__(fig)
+
+        # Create a Figure instead of using plt.subplots to avoid the global pyplot state machine
+        # which intercepts key presses globally in Qt apps
+        self.fig = Figure(figsize=(6, 4), dpi=100, facecolor='#2b2b2b')
+        self.ax = self.fig.add_subplot(111, facecolor='#1e1e1e')
+        super().__init__(self.fig)
         self.setParent(parent)
-
-        # Disable matplotlib default keymap bindings to prevent intercepting
-        # text input in QLineEdits elsewhere in the application
-        try:
-            # First try the newer matplotlib callback registry dictionary structure
-            cids = list(self.figure.canvas.callbacks.callbacks.get('key_press_event', {}).keys())
-            for cid in cids:
-                self.figure.canvas.mpl_disconnect(cid)
-        except AttributeError:
-            # Fallback for older/different matplotlib versions or just bypass if it fails
-            pass
-
-        # Alternatively, clearing plt.rcParams keymaps globally helps prevent this
-        for key in list(plt.rcParams.keys()):
-            if key.startswith('keymap.'):
-                plt.rcParams[key] = []
 
         self.df = None
         self.reset_marker_objects()
-        plt.tight_layout(pad=0.25)
+        self.fig.tight_layout(pad=0.25)
 
     def reset_marker_objects(self):
         self.point_marker, = self.ax.plot([], [], 'o', color='#ff5252', markersize=6, zorder=10)
@@ -1214,16 +1204,24 @@ class SyncPlayer(QMainWindow):
                 if not exists: w.writeheader()
                 w.writerow(log)
             self.is_saved = True
-            self.next_file()
+            QMessageBox.information(self, "Saved", "Data saved successfully.")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
 
     def next_file(self):
         if not self.is_saved:
-            QMessageBox.information(self, "Have you saved?", "Use the save button before continuing!")
-        elif self.idx < len(self.dirs) - 1:
+            reply = QMessageBox.warning(
+                self, "Unsaved Changes",
+                "You have not saved your data for this file. Are you sure you want to advance to the next file?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+
+        if self.idx < len(self.dirs) - 1:
             self.is_saved = False
-            self.idx += 1; self.load_file(self.idx)
+            self.idx += 1
+            self.load_file(self.idx)
         else:
             QMessageBox.information(self, "Done", "All files in directory processed!")
 
@@ -1235,8 +1233,7 @@ class SyncPlayer(QMainWindow):
                 Qt.Key_S: lambda: self.add_mark('stride_start'),
                 Qt.Key_D: lambda: self.add_mark('obs_start'),
                 Qt.Key_F: lambda: self.add_mark('obs_stop'),
-                Qt.Key_G: lambda: self.add_mark('stride_stop'),
-                Qt.Key_Return: self.save_data
+                Qt.Key_G: lambda: self.add_mark('stride_stop')
             }
             if e.key() in mapping:
                 mapping[e.key()]()
