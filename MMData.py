@@ -958,8 +958,11 @@ class SyncPlayer(QMainWindow):
             self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
             if self.dirs:
                 self.idx = 0
-                self.load_file(0)
                 self.next_btn.setEnabled(len(self.dirs) > 1)
+                # Use QTimer to delay the opening of the next dialog (ColumnSelection)
+                # This gives the native OS file dialog time to completely close and
+                # release its event loop hooks, fixing the duplicated character typing bug.
+                QTimer.singleShot(50, lambda: self.load_file(0))
 
     def detect_obstacle_type(self, path):
         path_lower = path.lower()
@@ -1027,9 +1030,8 @@ class SyncPlayer(QMainWindow):
                     except:
                         pass
 
-                # Pass parent=None to prevent matplotlib global key event hooks
-                # from duplicating line edit inputs or blocking backspace.
-                dlg = ColumnSelectionDialog(c, initial_config=saved_config, parent=None)
+                # Pass parent=self, since the QTimer delay fixed the duplicate key events
+                dlg = ColumnSelectionDialog(c, initial_config=saved_config, parent=self)
                 if dlg.exec_() == QDialog.Accepted:
                     self.column_config = dlg.result_config
                     try:
@@ -1075,9 +1077,8 @@ class SyncPlayer(QMainWindow):
             self.audio_player.pause()
 
     def open_plot_settings(self):
-        # Pass parent=None for similar reasons
         config = getattr(self, 'column_config', None)
-        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, self.show_series, config, parent=None)
+        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, self.show_series, config, parent=self)
         if dlg.exec_() == QDialog.Accepted:
             new_show_lpf = dlg.show_lpf_cb.isChecked()
             new_lpf_freq = dlg.lpf_spinbox.value()
