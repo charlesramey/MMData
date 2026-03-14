@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Qt5Agg') # Ensure we are using the correct backend without pyplot state machine side effects
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -211,15 +214,19 @@ def find_closest_data_index(df, target_time_ms):
 
 class MatplotlibCanvas(FigureCanvas):
     def __init__(self, parent=None):
+        # Apply dark background style to rcParams explicitly instead of using pyplot
         plt.style.use('dark_background')
-        fig, self.ax = plt.subplots(figsize=(6, 4), dpi=100)
-        fig.patch.set_facecolor('#2b2b2b')
-        self.ax.set_facecolor('#1e1e1e')
-        super().__init__(fig)
+
+        # Create a Figure instead of using plt.subplots to avoid the global pyplot state machine
+        # which intercepts key presses globally in Qt apps
+        self.fig = Figure(figsize=(6, 4), dpi=100, facecolor='#2b2b2b')
+        self.ax = self.fig.add_subplot(111, facecolor='#1e1e1e')
+        super().__init__(self.fig)
         self.setParent(parent)
+
         self.df = None
         self.reset_marker_objects()
-        plt.tight_layout(pad=0.25)
+        self.fig.tight_layout(pad=0.25)
 
     def reset_marker_objects(self):
         self.point_marker, = self.ax.plot([], [], 'o', color='#ff5252', markersize=6, zorder=10)
@@ -239,7 +246,9 @@ class MatplotlibCanvas(FigureCanvas):
         self.playhead_line.set_xdata([0])
         self.draw()
 
-    def update_data(self, df, config, show_lpf=True, lpf_freq=5.0):
+    def update_data(self, df, config, show_lpf=True, lpf_freq=5.0, show_series=None):
+        if show_series is None:
+            show_series = [True, True, True]
         self.df = df
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
@@ -248,6 +257,10 @@ class MatplotlibCanvas(FigureCanvas):
         colors = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03']
 
         for i, series in enumerate(config['series']):
+            # Skip drawing if this series is toggled off
+            if i < len(show_series) and not show_series[i]:
+                continue
+
             idx = i + 1
             color = colors[i % len(colors)]
             label_base = series.get('label', f'Series {idx}')
@@ -698,11 +711,28 @@ class ColumnSelectionDialog(QDialog):
         self.accept()
 
 class PlotSettingsDialog(QDialog):
-    def __init__(self, current_show_lpf, current_lpf_freq, parent=None):
+    def __init__(self, current_show_lpf, current_lpf_freq, current_show_series, column_config, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Plot Settings")
 
         layout = QVBoxLayout(self)
+
+        # Series Visibility
+        series_group = QGroupBox("Series Visibility")
+        series_layout = QVBoxLayout()
+        self.series_cbs = []
+        if column_config and 'series' in column_config:
+            for i, series in enumerate(column_config['series']):
+                if series['type'] != 'None': # Only show valid series
+                    label = series.get('label', f'Series {i+1}')
+                    cb = QCheckBox(f"Show {label}")
+                    # Ensure we don't index out of bounds if config has fewer than 3 elements
+                    is_checked = current_show_series[i] if i < len(current_show_series) else True
+                    cb.setChecked(is_checked)
+                    series_layout.addWidget(cb)
+                    self.series_cbs.append((i, cb))
+        series_group.setLayout(series_layout)
+        layout.addWidget(series_group)
 
         # Show LPF
         self.show_lpf_cb = QCheckBox("Show LPF Lines")
@@ -724,6 +754,14 @@ class PlotSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def get_series_visibility(self):
+        # We need to return a list of booleans based on checkboxes
+        result = [True, True, True] # Default
+        for i, cb in self.series_cbs:
+            if i < len(result):
+                result[i] = cb.isChecked()
+        return result
+
 class SyncPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -744,6 +782,7 @@ class SyncPlayer(QMainWindow):
         self.playback_rate = 0.25
         self.is_saved = False
         self.show_lpf = True
+        self.show_series = [True, True, True]
         self.lpf_freq = 5.0
         self.current_df = None
 
@@ -919,8 +958,11 @@ class SyncPlayer(QMainWindow):
             self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
             if self.dirs:
                 self.idx = 0
-                self.load_file(0)
                 self.next_btn.setEnabled(len(self.dirs) > 1)
+                # Use QTimer to delay the opening of the next dialog (ColumnSelection)
+                # This gives the native OS file dialog time to completely close and
+                # release its event loop hooks, fixing the duplicated character typing bug.
+                QTimer.singleShot(50, lambda: self.load_file(0))
 
     def detect_obstacle_type(self, path):
         path_lower = path.lower()
@@ -988,9 +1030,8 @@ class SyncPlayer(QMainWindow):
                     except:
                         pass
 
-                # Pass parent=None to prevent matplotlib global key event hooks
-                # from duplicating line edit inputs or blocking backspace.
-                dlg = ColumnSelectionDialog(c, initial_config=saved_config, parent=None)
+                # Pass parent=self, since the QTimer delay fixed the duplicate key events
+                dlg = ColumnSelectionDialog(c, initial_config=saved_config, parent=self)
                 if dlg.exec_() == QDialog.Accepted:
                     self.column_config = dlg.result_config
                     try:
@@ -1004,7 +1045,7 @@ class SyncPlayer(QMainWindow):
         df, err = load_data(c, self.column_config, self.lpf_freq)
         if df is not None:
             self.current_df = df
-            self.plot.update_data(df, self.column_config, self.show_lpf, self.lpf_freq)
+            self.plot.update_data(df, self.column_config, self.show_lpf, self.lpf_freq, self.show_series)
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
             self.current_video_path = v
@@ -1036,11 +1077,12 @@ class SyncPlayer(QMainWindow):
             self.audio_player.pause()
 
     def open_plot_settings(self):
-        # Pass parent=None for similar reasons
-        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, parent=None)
+        config = getattr(self, 'column_config', None)
+        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, self.show_series, config, parent=self)
         if dlg.exec_() == QDialog.Accepted:
             new_show_lpf = dlg.show_lpf_cb.isChecked()
             new_lpf_freq = dlg.lpf_spinbox.value()
+            new_show_series = dlg.get_series_visibility()
 
             recalculate_lpf = False
             if self.lpf_freq != new_lpf_freq:
@@ -1048,11 +1090,12 @@ class SyncPlayer(QMainWindow):
 
             self.show_lpf = new_show_lpf
             self.lpf_freq = new_lpf_freq
+            self.show_series = new_show_series
 
             if self.current_df is not None and hasattr(self, 'column_config'):
                 if recalculate_lpf:
                     self.current_df = process_data_lpf(self.current_df, self.column_config, self.lpf_freq)
-                self.plot.update_data(self.current_df, self.column_config, self.show_lpf, self.lpf_freq)
+                self.plot.update_data(self.current_df, self.column_config, self.show_lpf, self.lpf_freq, self.show_series)
 
                 # Restore playhead position and markers after clearing and redrawing plot
                 self.plot.update_cursor(self.video_time_ms, self.offset_ms)
@@ -1162,16 +1205,24 @@ class SyncPlayer(QMainWindow):
                 if not exists: w.writeheader()
                 w.writerow(log)
             self.is_saved = True
-            self.next_file()
+            QMessageBox.information(self, "Saved", "Data saved successfully.")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
 
     def next_file(self):
         if not self.is_saved:
-            QMessageBox.information(self, "Have you saved?", "Use the save button before continuing!")
-        elif self.idx < len(self.dirs) - 1:
+            reply = QMessageBox.warning(
+                self, "Unsaved Changes",
+                "You have not saved your data for this file. Are you sure you want to advance to the next file?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+
+        if self.idx < len(self.dirs) - 1:
             self.is_saved = False
-            self.idx += 1; self.load_file(self.idx)
+            self.idx += 1
+            self.load_file(self.idx)
         else:
             QMessageBox.information(self, "Done", "All files in directory processed!")
 
@@ -1183,8 +1234,7 @@ class SyncPlayer(QMainWindow):
                 Qt.Key_S: lambda: self.add_mark('stride_start'),
                 Qt.Key_D: lambda: self.add_mark('obs_start'),
                 Qt.Key_F: lambda: self.add_mark('obs_stop'),
-                Qt.Key_G: lambda: self.add_mark('stride_stop'),
-                Qt.Key_Return: self.save_data
+                Qt.Key_G: lambda: self.add_mark('stride_stop')
             }
             if e.key() in mapping:
                 mapping[e.key()]()
