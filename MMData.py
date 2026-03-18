@@ -11,10 +11,11 @@ from PyQt5.QtWidgets import (
     QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem, QComboBox, QCheckBox,
     QDialog, QTableWidget, QTableWidgetItem, QDialogButtonBox, QRadioButton, QButtonGroup,
-    QFormLayout, QGroupBox, QGridLayout, QScrollArea, QFrame, QSizePolicy, QDoubleSpinBox
+    QFormLayout, QGroupBox, QGridLayout, QScrollArea, QFrame, QSizePolicy, QDoubleSpinBox,
+    QPlainTextEdit
 )
 from PyQt5.QtGui import QImage, QPixmap, QFont, QPen, QColor
-from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
+from PyQt5.QtCore import Qt, QTimer, QSize, QSettings, QObject, QEvent
 import sys
 import subprocess
 import os
@@ -401,6 +402,24 @@ class SpectrogramCanvas(QGraphicsView):
                  x = self.cursor_line.line().x1()
                  self.centerOn(x, self.scene.height()/2)
 
+class NoIMELineEdit(QLineEdit):
+    """QLineEdit with macOS input method composition disabled to prevent double-insertion."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setAttribute(Qt.WA_InputMethodEnabled, False)
+
+    def inputMethodEvent(self, e):
+        # Block IMK composition events entirely; let keyPressEvent handle all input
+        e.accept()
+
+class KeyEater(QObject):
+    """Swallows key events on the observed object."""
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress:
+            if not obj.hasFocus():
+                return True  # Swallow
+        return super().eventFilter(obj, event)
+
 class ColumnSelectionDialog(QDialog):
     def __init__(self, csv_path, initial_config=None, parent=None):
         super().__init__(parent)
@@ -418,6 +437,7 @@ class ColumnSelectionDialog(QDialog):
         preview_group = QGroupBox("CSV Preview (First 5 Rows)")
         preview_layout = QVBoxLayout()
         self.table = QTableWidget()
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         preview_layout.addWidget(self.table)
         preview_group.setLayout(preview_layout)
         main_layout.addWidget(preview_group)
@@ -437,6 +457,9 @@ class ColumnSelectionDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFixedHeight(300)
+        # Install filter on viewport to block it re-forwarding key events to children
+        self._scroll_filter = KeyEater(scroll.viewport())
+        scroll.viewport().installEventFilter(self._scroll_filter)
         self.series_area = QWidget()
         self.series_layout = QVBoxLayout(self.series_area)
         self.series_layout.setContentsMargins(0, 0, 0, 0)
@@ -514,6 +537,7 @@ class ColumnSelectionDialog(QDialog):
             if widget: widget.deleteLater()
 
         self.series_widgets = []
+        self._key_eaters = []
 
         for i in range(1, 4):
             group = QGroupBox(f"Series {i}")
@@ -521,8 +545,11 @@ class ColumnSelectionDialog(QDialog):
 
             # Series Name (Label)
             name_layout = QHBoxLayout()
-            name_input = QLineEdit()
+            name_input = NoIMELineEdit()
             name_input.setPlaceholderText(f"Custom Name (optional)")
+            key_eater = KeyEater(name_input)
+            name_input.installEventFilter(key_eater)
+            self._key_eaters.append(key_eater)
             name_layout.addWidget(QLabel("Label:"))
             name_layout.addWidget(name_input)
             layout.addLayout(name_layout)
@@ -953,7 +980,9 @@ class SyncPlayer(QMainWindow):
         return btn
 
     def choose_directory(self):
-        p = QFileDialog.getExistingDirectory(self, "Select Root")
+        p = QFileDialog.getExistingDirectory(self, 
+                                             "Select Root",
+                                             options=QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog)
         if p:
             self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
             if self.dirs:
@@ -1029,10 +1058,14 @@ class SyncPlayer(QMainWindow):
                             saved_config = json.load(f)
                     except:
                         pass
-
-                # Pass parent=self, since the QTimer delay fixed the duplicate key events
+                spectrogram_was_visible = self.spectrogram.isVisible()
+                if spectrogram_was_visible:
+                    self.spectrogram.hide()
                 dlg = ColumnSelectionDialog(c, initial_config=saved_config, parent=self)
-                if dlg.exec_() == QDialog.Accepted:
+                dialog_result = dlg.exec_()
+                if spectrogram_was_visible:
+                    self.spectrogram.show()
+                if dialog_result == QDialog.Accepted:
                     self.column_config = dlg.result_config
                     try:
                         with open(CONFIG_FILE, 'w') as f:
@@ -1227,8 +1260,8 @@ class SyncPlayer(QMainWindow):
             QMessageBox.information(self, "Done", "All files in directory processed!")
 
     def keyPressEvent(self, e):
-        # Only handle these shortcuts if the main window is active and no dialog is open/focused
-        if not self.focusWidget() or not isinstance(self.focusWidget(), QLineEdit):
+        focused = self.focusWidget()
+        if not focused or not isinstance(focused, QLineEdit):
             mapping = {
                 Qt.Key_Space: self.toggle_play,
                 Qt.Key_S: lambda: self.add_mark('stride_start'),
@@ -1239,8 +1272,7 @@ class SyncPlayer(QMainWindow):
             if e.key() in mapping:
                 mapping[e.key()]()
                 return
-
-        super().keyPressEvent(e)
+            super().keyPressEvent(e)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
