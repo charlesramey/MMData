@@ -9,18 +9,25 @@ except ImportError:
         print("Error: Could not import VideoFileClip from moviepy or moviepy.editor")
         VideoFileClip = None
 
-def find_video_csv_pair(directory):
+def find_video_csv_pair(directory, prefer_trimmed=False):
     video_file = None
     csv_file = None
+    csv_candidates = []
     for item in os.listdir(directory):
         full_path = os.path.join(directory, item)
         if os.path.isfile(full_path):
             if item.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')) and video_file is None:
                 video_file = full_path
-            elif item.lower().endswith('.csv') and csv_file is None:
-                csv_file = full_path
-            if video_file and csv_file:
-                break
+            elif item.lower().endswith('.csv') and item.lower() != 'sync_log.csv':
+                csv_candidates.append(full_path)
+    # Prefer _trimmed.csv or _cleaned.csv based on flag
+    preferred = '_trimmed.csv' if prefer_trimmed else '_cleaned.csv'
+    for c in csv_candidates:
+        if preferred in c:
+            csv_file = c
+            break
+    if csv_file is None and csv_candidates:
+        csv_file = csv_candidates[0]
     return video_file, csv_file
 
 def ensure_audio_extracted(video_path):

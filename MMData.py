@@ -2,25 +2,18 @@ import pandas as pd
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Qt5Agg') # Ensure we are using the correct backend without pyplot state machine side effects
-from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QSlider, QLabel, QMessageBox, QFileDialog, QLineEdit, QSplitter,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem, QComboBox, QCheckBox,
-    QDialog, QTableWidget, QTableWidgetItem, QDialogButtonBox, QRadioButton, QButtonGroup,
-    QFormLayout, QGroupBox, QGridLayout, QScrollArea, QFrame, QSizePolicy, QDoubleSpinBox,
-    QPlainTextEdit
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem, QComboBox, QCheckBox
 )
 from PyQt5.QtGui import QImage, QPixmap, QFont, QPen, QColor
-from PyQt5.QtCore import Qt, QTimer, QSize, QSettings, QObject, QEvent
+from PyQt5.QtCore import Qt, QTimer, QSize, QSettings
 import sys
 import subprocess
 import os
 import csv
-import json
 import platform  
 import time      
 from datetime import datetime
@@ -33,8 +26,9 @@ from mmdata_utils import find_video_csv_pair, ensure_audio_extracted
 
 # --- CONFIGURATION ---
 DOWNSCALED_VIDEO_PREFIX = 'downscaled_720p_v3_'
-OFFSET_RANGE_MS = 30000 
-VIDEO_SIZE = (620, 440) 
+OFFSET_RANGE_MS = 30000
+VIDEO_SIZE = (620, 440)
+MASTER_CSV = 'FIXEDMasterAlignments/Arya_clean_master.csv'
 
 # --- TOOLTIPS ---
 TOOLTIPS = {
@@ -90,7 +84,6 @@ if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
 LOG_FILE = os.path.join(LOG_DIR, 'sync_log.csv')
-CONFIG_FILE = os.path.join(LOG_DIR, 'column_config.json')
 # ---------------------
 
 STYLE_SHEET = """
@@ -158,52 +151,17 @@ def apply_lowpass(data, cutoff, fs, order=4):
     y = filtfilt(b, a, data)
     return y
 
-def process_data_lpf(df, config, lpf_cutoff=5.0):
-    fs = 1.0 / np.mean(np.diff(df['Relative_Time_s'])) if len(df) > 1 else 100.0
-
-    for i, series in enumerate(config['series']):
-        idx = i + 1
-        raw_data = None
-
-        if series['type'] == 'raw':
-            col = series['col']
-            if col in df.columns:
-                raw_data = df[col].values
-        else: # magnitude
-            x, y, z = series['x'], series['y'], series['z']
-            if x in df.columns and y in df.columns and z in df.columns:
-                raw_data = np.sqrt(df[x]**2 + df[y]**2 + df[z]**2)
-
-        if raw_data is not None:
-            # Normalize Raw
-            norm_raw = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data)) if np.max(raw_data) > np.min(raw_data) else raw_data
-
-            # LPF
-            lpf_data = apply_lowpass(raw_data, lpf_cutoff, fs)
-            # Normalize LPF
-            norm_lpf = (lpf_data - np.min(lpf_data)) / (np.max(lpf_data) - np.min(lpf_data)) if np.max(lpf_data) > np.min(lpf_data) else lpf_data
-
-            df[f'Series{idx}_Raw'] = norm_raw
-            df[f'Series{idx}_LPF'] = norm_lpf
-
-    return df
-
-def load_data(csv_path, config, lpf_cutoff=5.0):
+def load_data(csv_path):
     try:
         df = pd.read_csv(csv_path)
         if df.empty: return None, "CSV file is empty."
     except Exception as e: return None, f"Error loading CSV: {e}"
 
-    time_col = config.get('time_col')
-    if time_col not in df.columns:
-        return None, f"Error: Time column '{time_col}' not found."
+    if 'Timestamp' not in df.columns or 'Ax' not in df.columns:
+        return None, "Error: 'Timestamp' or 'Ax' column not found in CSV."
 
-    df['Relative_Time_s'] = df[time_col] - df[time_col].iloc[0]
+    df['Relative_Time_s'] = df['Timestamp'] - df['Timestamp'].iloc[0]
     df['Relative_Time_ms'] = df['Relative_Time_s'] * 1000
-
-    # Pre-calculate series data
-    df = process_data_lpf(df, config, lpf_cutoff)
-
     return df, None
 
 def find_closest_data_index(df, target_time_ms):
@@ -215,23 +173,17 @@ def find_closest_data_index(df, target_time_ms):
 
 class MatplotlibCanvas(FigureCanvas):
     def __init__(self, parent=None):
-        # Apply dark background style to rcParams explicitly instead of using pyplot
         plt.style.use('dark_background')
-
-        # Create a Figure instead of using plt.subplots to avoid the global pyplot state machine
-        # which intercepts key presses globally in Qt apps
-        self.fig = Figure(figsize=(6, 4), dpi=100, facecolor='#2b2b2b')
-        self.ax = self.fig.add_subplot(111, facecolor='#1e1e1e')
-        super().__init__(self.fig)
+        fig, self.ax = plt.subplots(figsize=(6, 4), dpi=100)
+        fig.patch.set_facecolor('#2b2b2b')
+        self.ax.set_facecolor('#1e1e1e')
+        super().__init__(fig)
         self.setParent(parent)
-
-        self.df = None
         self.reset_marker_objects()
-        self.fig.tight_layout(pad=0.25)
+        plt.tight_layout(pad=0.25)
 
     def reset_marker_objects(self):
         self.point_marker, = self.ax.plot([], [], 'o', color='#ff5252', markersize=6, zorder=10)
-        self.playhead_line = self.ax.axvline(x=0, color='white', lw=1.5, zorder=5) # Playhead line
         # Use 0 instead of np.nan to avoid singular matrix errors during transform
         self.m = {
             'stride_start': (self.ax.axvline(x=1, color='#448aff', ls='--', alpha=0), self.ax.text(0,0,'',color='#448aff',fontsize=8,fontweight='bold', alpha=0)),
@@ -244,37 +196,29 @@ class MatplotlibCanvas(FigureCanvas):
         for line, label in self.m.values():
             line.set_xdata([np.nan]); line.set_alpha(0); label.set_alpha(0)
         self.point_marker.set_data([], [])
-        self.playhead_line.set_xdata([0])
         self.draw()
 
-    def update_data(self, df, config, show_lpf=True, lpf_freq=5.0, show_series=None):
-        if show_series is None:
-            show_series = [True, True, True]
+    def update_data(self, df):
         self.df = df
+        mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
+        mag = (mag - np.mean(mag))/np.std(mag)
+        gmag = np.sqrt(df['Gx']**2 + df['Gy']**2 + df['Gz']**2)
+        gmag = (gmag - np.mean(gmag))/np.std(gmag)
+        diffs = np.diff(df['Relative_Time_s'])
+        fs = 1.0 / np.mean(diffs) if len(diffs) > 0 else 100.0
+        self.df['Amag_F'] = apply_lowpass(mag, 5.0, fs)
+        self.df['Gmag_F'] = apply_lowpass(gmag, 5.0, fs)
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
-
-        # Colors: Cyan, Pink, Orange, Green
-        colors = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03']
-
-        for i, series in enumerate(config['series']):
-            # Skip drawing if this series is toggled off
-            if i < len(show_series) and not show_series[i]:
-                continue
-
-            idx = i + 1
-            color = colors[i % len(colors)]
-            label_base = series.get('label', f'Series {idx}')
-
-            raw_key = f'Series{idx}_Raw'
-            lpf_key = f'Series{idx}_LPF'
-
-            if raw_key in df.columns:
-                self.ax.plot(df['Relative_Time_s'], df[raw_key], color=color, lw=1.0, label=f'{label_base} (Raw)')
-
-            if show_lpf and lpf_key in df.columns:
-                self.ax.plot(df['Relative_Time_s'], df[lpf_key], color=color, lw=0.8, alpha=0.6, label=f'{label_base} ({lpf_freq}Hz LPF)')
-
+        self.ax.set_facecolor('#1e1e1e')
+        self.ax.plot(df['Relative_Time_s'], mag, color='#80deea', lw=0.8, alpha=0.3)
+        self.ax.plot(df['Relative_Time_s'], self.df['Amag_F'], color='#00bcd4', lw=1.5, label='Accel (5Hz)')
+        if 'Pressure' in df.columns:
+            p = apply_lowpass(df['Pressure'].values, 2.0, fs)
+            p_s = (p - p.min()) / (p.max() - p.min()) * mag.max() if p.max() > p.min() else p
+            self.ax.plot(df['Relative_Time_s'], p_s, color='#ffb74d', lw=1.2, alpha=0.7, label='Pressure')
+        self.ax.plot(df['Relative_Time_s'], gmag, color='#f069ab', lw=0.8, alpha=0.3)
+        self.ax.plot(df['Relative_Time_s'], self.df['Gmag_F'], color='#69f0ae', lw=1.5, label='Gyro (5Hz)')
         self.ax.tick_params(colors='#e0e0e0')
         self.ax.xaxis.label.set_color('#e0e0e0')
         self.ax.yaxis.label.set_color('#e0e0e0')
@@ -292,20 +236,26 @@ class MatplotlibCanvas(FigureCanvas):
         label.set_position((time_s, self.ax.get_ylim()[1])); label.set_text(key.upper().replace('_', ' ')); label.set_alpha(1.0)
         self.draw()
 
+    def highlight_region(self, start_row, end_row):
+        """Highlight the IMU region between start_row and end_row indices."""
+        if self.df is None or start_row is None or end_row is None:
+            return
+        start_row = max(0, min(start_row, len(self.df) - 1))
+        end_row = max(0, min(end_row, len(self.df) - 1))
+        t_start = self.df.iloc[start_row]['Relative_Time_s']
+        t_end = self.df.iloc[end_row]['Relative_Time_s']
+        self.ax.axvspan(t_start, t_end, alpha=0.15, color='#ffeb3b', zorder=0,
+                        label=f'Master region [{start_row}:{end_row}]')
+        self.ax.axvline(x=t_start, color='#ffeb3b', ls='--', lw=1.2, alpha=0.6)
+        self.ax.axvline(x=t_end, color='#ffeb3b', ls='--', lw=1.2, alpha=0.6)
+        self.ax.legend(fontsize=7, loc='upper left', framealpha=0.2, facecolor='#2b2b2b',
+                       edgecolor='#555555', labelcolor='white')
+        self.draw()
+
     def update_cursor(self, t_ms, offset_ms):
         if self.df is None: return
-        current_time_s = (t_ms + offset_ms) / 1000.0
         idx = find_closest_data_index(self.df, t_ms + offset_ms)
-
-        # Update Playhead Line
-        self.playhead_line.set_xdata([current_time_s])
-
-        # We need a robust Y value for the cursor point.
-        y_val = 0.5
-        if 'Series1_LPF' in self.df.columns:
-            y_val = self.df.loc[idx, 'Series1_LPF']
-
-        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [y_val])
+        self.point_marker.set_data([self.df.loc[idx, 'Relative_Time_s']], [self.df.loc[idx, 'Amag_F']])
         self.draw()
 
 class SpectrogramCanvas(QGraphicsView):
@@ -402,398 +352,12 @@ class SpectrogramCanvas(QGraphicsView):
                  x = self.cursor_line.line().x1()
                  self.centerOn(x, self.scene.height()/2)
 
-class NoIMELineEdit(QLineEdit):
-    """QLineEdit with macOS input method composition disabled to prevent double-insertion."""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setAttribute(Qt.WA_InputMethodEnabled, False)
-
-    def inputMethodEvent(self, e):
-        # Block IMK composition events entirely; let keyPressEvent handle all input
-        e.accept()
-
-class KeyEater(QObject):
-    """Swallows key events on the observed object."""
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.KeyPress:
-            if not obj.hasFocus():
-                return True  # Swallow
-        return super().eventFilter(obj, event)
-
-class ColumnSelectionDialog(QDialog):
-    def __init__(self, csv_path, initial_config=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select Data Columns")
-        self.resize(900, 600)
-        self.csv_path = csv_path
-        self.headers = []
-        self.preview_data = []
-        self.result_config = None
-        self.initial_config = initial_config
-
-        main_layout = QVBoxLayout(self)
-
-        # 1. Preview
-        preview_group = QGroupBox("CSV Preview (First 5 Rows)")
-        preview_layout = QVBoxLayout()
-        self.table = QTableWidget()
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        preview_layout.addWidget(self.table)
-        preview_group.setLayout(preview_layout)
-        main_layout.addWidget(preview_group)
-
-        # 2. Config
-        config_group = QGroupBox("Configuration")
-        config_layout = QVBoxLayout()
-
-        # Time
-        time_layout = QHBoxLayout()
-        time_layout.addWidget(QLabel("Time Column:"))
-        self.time_combo = QComboBox()
-        time_layout.addWidget(self.time_combo)
-        config_layout.addLayout(time_layout)
-
-        # Series Area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFixedHeight(300)
-        # Install filter on viewport to block it re-forwarding key events to children
-        self._scroll_filter = KeyEater(scroll.viewport())
-        scroll.viewport().installEventFilter(self._scroll_filter)
-        self.series_area = QWidget()
-        self.series_layout = QVBoxLayout(self.series_area)
-        self.series_layout.setContentsMargins(0, 0, 0, 0)
-        self.series_layout.addStretch()
-        scroll.setWidget(self.series_area)
-        config_layout.addWidget(scroll)
-
-        config_group.setLayout(config_layout)
-        main_layout.addWidget(config_group)
-
-        # Buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        main_layout.addWidget(buttons)
-
-        # Load Data
-        self.load_csv_preview()
-        self.update_series_ui()
-
-        # Apply initial config if provided
-        if self.initial_config:
-            self.apply_initial_config()
-
-    def load_csv_preview(self):
-        try:
-            with open(self.csv_path, 'r', newline='') as f:
-                reader = csv.reader(f)
-                try:
-                    self.headers = next(reader)
-                except StopIteration:
-                    self.headers = []
-
-                self.preview_data = []
-                for i, row in enumerate(reader):
-                    if i < 5: self.preview_data.append(row)
-                    else: break
-
-            if not self.headers:
-                QMessageBox.critical(self, "Error", "CSV file is empty or invalid.")
-                self.reject()
-                return
-
-            self.table.setColumnCount(len(self.headers))
-            self.table.setHorizontalHeaderLabels(self.headers)
-            self.table.setRowCount(len(self.preview_data))
-
-            for r, row in enumerate(self.preview_data):
-                for c, val in enumerate(row):
-                    if c < len(self.headers):
-                        self.table.setItem(r, c, QTableWidgetItem(val))
-
-            self.table.resizeColumnsToContents()
-            self.populate_combos()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to read CSV: {e}")
-            self.reject()
-
-    def populate_combos(self):
-        self.time_combo.clear()
-        self.time_combo.addItems(self.headers)
-        # Smart detect Time
-        for i, h in enumerate(self.headers):
-            lower = h.lower()
-            if 'time' in lower or 'ts' == lower or 'timestamp' == lower:
-                self.time_combo.setCurrentIndex(i)
-                break
-
-    def update_series_ui(self):
-        # Clear existing widgets
-        while self.series_layout.count() > 1: # Keep stretch item
-            item = self.series_layout.takeAt(0)
-            widget = item.widget()
-            if widget: widget.deleteLater()
-
-        self.series_widgets = []
-        self._key_eaters = []
-
-        for i in range(1, 4):
-            group = QGroupBox(f"Series {i}")
-            layout = QVBoxLayout()
-
-            # Series Name (Label)
-            name_layout = QHBoxLayout()
-            name_input = NoIMELineEdit()
-            name_input.setPlaceholderText(f"Custom Name (optional)")
-            key_eater = KeyEater(name_input)
-            name_input.installEventFilter(key_eater)
-            self._key_eaters.append(key_eater)
-            name_layout.addWidget(QLabel("Label:"))
-            name_layout.addWidget(name_input)
-            layout.addLayout(name_layout)
-
-            # Type selection
-            type_layout = QHBoxLayout()
-            type_combo = QComboBox()
-            type_combo.addItems(["None", "Raw Column", "Vector Magnitude (X,Y,Z)"])
-            type_layout.addWidget(QLabel("Type:"))
-            type_layout.addWidget(type_combo)
-            type_layout.addStretch()
-            layout.addLayout(type_layout)
-
-            # Options container
-            options_widget = QWidget()
-            options_layout = QVBoxLayout(options_widget)
-            options_layout.setContentsMargins(0, 0, 0, 0)
-
-            widgets = {'type': type_combo, 'options_widget': options_widget, 'name_input': name_input}
-
-            def clear_layout(layout):
-                if layout is not None:
-                    while layout.count():
-                        item = layout.takeAt(0)
-                        widget = item.widget()
-                        if widget is not None:
-                            widget.deleteLater()
-                        else:
-                            clear_layout(item.layout())
-
-            def create_raw_ui(w=widgets, i_idx=i):
-                clear_layout(w['options_widget'].layout())
-
-                layout = QHBoxLayout()
-                combo = QComboBox()
-                combo.addItem("-- None --", None)
-                for h in self.headers: combo.addItem(h, h)
-                layout.addWidget(QLabel("Column:"))
-                layout.addWidget(combo)
-                layout.addStretch()
-                w['options_widget'].layout().addLayout(layout)
-                w['raw_combo'] = combo
-
-            def create_mag_ui(w=widgets, i_idx=i):
-                clear_layout(w['options_widget'].layout())
-
-                layout = QGridLayout()
-                for idx, axis in enumerate(['X', 'Y', 'Z']):
-                    layout.addWidget(QLabel(f"{axis}:"), idx, 0)
-                    combo = QComboBox()
-                    combo.addItem("-- None --", None)
-                    for h in self.headers: combo.addItem(h, h)
-                    layout.addWidget(combo, idx, 1)
-                    w[f'mag_{axis}'] = combo
-
-                    # Smart Auto-select
-                    hint = ''
-                    if i_idx == 1: hint = 'A' # Accel
-                    elif i_idx == 2: hint = 'G' # Gyro
-                    elif i_idx == 3: hint = 'M' # Mag or Pressure? No, Mag usually M
-
-                    target_start = (hint + axis).lower()
-                    if hint:
-                        for idx_h, h in enumerate(self.headers):
-                            if h.lower().startswith(target_start):
-                                combo.setCurrentIndex(idx_h + 1)
-                                break
-                w['options_widget'].layout().addLayout(layout)
-
-            def on_type_changed(text, w=widgets, i_idx=i):
-                if text == "Raw Column":
-                    create_raw_ui(w, i_idx)
-                    w['options_widget'].show()
-                elif text == "Vector Magnitude (X,Y,Z)":
-                    create_mag_ui(w, i_idx)
-                    w['options_widget'].show()
-                else:
-                    clear_layout(w['options_widget'].layout())
-                    w['options_widget'].hide()
-
-            type_combo.currentTextChanged.connect(on_type_changed)
-
-            layout.addWidget(options_widget)
-            group.setLayout(layout)
-            self.series_layout.insertWidget(self.series_layout.count()-1, group)
-            self.series_widgets.append(widgets)
-
-            # Default to Raw for Series 1, None for others to start
-            if i == 1:
-                type_combo.setCurrentText("Raw Column")
-            else:
-                type_combo.setCurrentText("None")
-                options_widget.hide()
-
-    def apply_initial_config(self):
-        # Apply Time column
-        time_col = self.initial_config.get('time_col')
-        if time_col:
-            idx = self.time_combo.findText(time_col)
-            if idx >= 0:
-                self.time_combo.setCurrentIndex(idx)
-
-        # Apply Series configuration
-        series_conf = self.initial_config.get('series', [])
-
-        for i, conf in enumerate(series_conf):
-            if i >= len(self.series_widgets):
-                break
-
-            w = self.series_widgets[i]
-            s_type = conf.get('type')
-
-            # Apply Label if it doesn't match the auto-generated ones
-            label = conf.get('label', '')
-            auto_labels = [f"Series {i+1} ({conf.get('col', '')})", f"Series {i+1} Mag"]
-            if label and label not in auto_labels:
-                w['name_input'].setText(label)
-
-            if s_type == 'raw':
-                w['type'].setCurrentText("Raw Column")
-                col = conf.get('col')
-                if col and 'raw_combo' in w:
-                    idx = w['raw_combo'].findText(col)
-                    if idx >= 0:
-                        w['raw_combo'].setCurrentIndex(idx)
-
-            elif s_type == 'magnitude':
-                w['type'].setCurrentText("Vector Magnitude (X,Y,Z)")
-                for axis in ['x', 'y', 'z']:
-                    col = conf.get(axis)
-                    combo_key = f"mag_{axis.upper()}"
-                    if col and combo_key in w:
-                        idx = w[combo_key].findText(col)
-                        if idx >= 0:
-                            w[combo_key].setCurrentIndex(idx)
-            else:
-                w['type'].setCurrentText("None")
-
-    def validate_and_accept(self):
-        time_col = self.time_combo.currentText()
-        series_list = []
-
-        valid_series_found = False
-
-        for idx, w in enumerate(self.series_widgets):
-            s_type = w['type'].currentText()
-            user_label = w['name_input'].text().strip()
-
-            if s_type == "Raw Column":
-                if 'raw_combo' in w:
-                    col = w['raw_combo'].currentData()
-                    if col:
-                        label = user_label if user_label else f"Series {idx+1} ({col})"
-                        series_list.append({
-                            'type': 'raw',
-                            'col': col,
-                            'label': label
-                        })
-                        valid_series_found = True
-            elif s_type == "Vector Magnitude (X,Y,Z)":
-                if 'mag_X' in w and 'mag_Y' in w and 'mag_Z' in w:
-                    x = w['mag_X'].currentData()
-                    y = w['mag_Y'].currentData()
-                    z = w['mag_Z'].currentData()
-                    if x and y and z:
-                        label = user_label if user_label else f"Series {idx+1} Mag"
-                        series_list.append({
-                            'type': 'magnitude',
-                            'x': x, 'y': y, 'z': z,
-                            'label': label
-                        })
-                        valid_series_found = True
-
-        if not time_col:
-            QMessageBox.warning(self, "Validation Error", "Please select a Time column.")
-            return
-
-        if not valid_series_found:
-            QMessageBox.warning(self, "Validation Error", "Please select at least one valid data series.")
-            return
-
-        self.result_config = {
-            'time_col': time_col,
-            'series': series_list
-        }
-        self.accept()
-
-class PlotSettingsDialog(QDialog):
-    def __init__(self, current_show_lpf, current_lpf_freq, current_show_series, column_config, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Plot Settings")
-
-        layout = QVBoxLayout(self)
-
-        # Series Visibility
-        series_group = QGroupBox("Series Visibility")
-        series_layout = QVBoxLayout()
-        self.series_cbs = []
-        if column_config and 'series' in column_config:
-            for i, series in enumerate(column_config['series']):
-                if series['type'] != 'None': # Only show valid series
-                    label = series.get('label', f'Series {i+1}')
-                    cb = QCheckBox(f"Show {label}")
-                    # Ensure we don't index out of bounds if config has fewer than 3 elements
-                    is_checked = current_show_series[i] if i < len(current_show_series) else True
-                    cb.setChecked(is_checked)
-                    series_layout.addWidget(cb)
-                    self.series_cbs.append((i, cb))
-        series_group.setLayout(series_layout)
-        layout.addWidget(series_group)
-
-        # Show LPF
-        self.show_lpf_cb = QCheckBox("Show LPF Lines")
-        self.show_lpf_cb.setChecked(current_show_lpf)
-        layout.addWidget(self.show_lpf_cb)
-
-        # LPF Frequency
-        freq_layout = QHBoxLayout()
-        freq_layout.addWidget(QLabel("LPF Cutoff Frequency (Hz):"))
-        self.lpf_spinbox = QDoubleSpinBox()
-        self.lpf_spinbox.setRange(0.1, 50.0)
-        self.lpf_spinbox.setSingleStep(0.1)
-        self.lpf_spinbox.setValue(current_lpf_freq)
-        freq_layout.addWidget(self.lpf_spinbox)
-        layout.addLayout(freq_layout)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def get_series_visibility(self):
-        # We need to return a list of booleans based on checkboxes
-        result = [True, True, True] # Default
-        for i, cb in self.series_cbs:
-            if i < len(result):
-                result[i] = cb.isChecked()
-        return result
-
 class SyncPlayer(QMainWindow):
-    def __init__(self):
+    def __init__(self, prefer_trimmed=False):
         super().__init__()
         self.setWindowTitle("Dog Agility Sync Tool")
         self.setStyleSheet(STYLE_SHEET)
+        self.prefer_trimmed = prefer_trimmed
 
         self.cap = None
         self.is_playing = False
@@ -807,12 +371,8 @@ class SyncPlayer(QMainWindow):
         self.marker_btns = {}
         self.audio_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
         self.playback_rate = 0.25
-        self.is_saved = False
-        self.show_lpf = True
-        self.show_series = [True, True, True]
-        self.lpf_freq = 5.0
-        self.current_df = None
-
+        self.master_alignments = self._load_master_alignments()
+        
         self.central = QWidget()
         self.setCentralWidget(self.central)
         layout = QVBoxLayout(self.central)
@@ -827,18 +387,12 @@ class SyncPlayer(QMainWindow):
         dir_btn.clicked.connect(self.choose_directory)
         dir_btn.setFixedWidth(140)
 
+        single_btn = QPushButton("📁 Open Single Folder")
+        single_btn.clicked.connect(self.choose_single_folder)
+        single_btn.setFixedWidth(160)
+
         self.file_lbl = QLabel("No File Loaded")
         self.file_lbl.setStyleSheet("font-size: 16px; color: #ffffff;")
-
-        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
-        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
-        self.toggle_spec_btn.setCheckable(True)
-        self.toggle_spec_btn.setChecked(True)
-
-        self.plot_settings_btn = QPushButton("⚙️ Plot Settings")
-        self.plot_settings_btn.clicked.connect(self.open_plot_settings)
-        # Avoid fixing width or setting it too small so text renders correctly
-        self.plot_settings_btn.setMinimumWidth(120)
 
         self.next_btn = QPushButton("Next File ⏭")
         self.next_btn.clicked.connect(self.next_file)
@@ -846,10 +400,9 @@ class SyncPlayer(QMainWindow):
         self.next_btn.setEnabled(False)
 
         toolbar.addWidget(dir_btn)
+        toolbar.addWidget(single_btn)
         toolbar.addWidget(self.file_lbl)
         toolbar.addStretch()
-        toolbar.addWidget(self.toggle_spec_btn)
-        toolbar.addWidget(self.plot_settings_btn)
         toolbar.addWidget(self.next_btn)
         layout.addLayout(toolbar)
 
@@ -862,16 +415,10 @@ class SyncPlayer(QMainWindow):
 
         self.spectrogram = SpectrogramCanvas(self)
         self.plot = MatplotlibCanvas(self)
-        self.plot_widget = QWidget()
-        plot_layout = QVBoxLayout(self.plot_widget)
-        plot_layout.setContentsMargins(0, 0, 0, 0)
-        self.plot_toolbar = NavigationToolbar(self.plot, self.plot_widget)
-        plot_layout.addWidget(self.plot_toolbar)
-        plot_layout.addWidget(self.plot)
 
         self.splitter.addWidget(self.video_lbl)
         self.splitter.addWidget(self.spectrogram)
-        self.splitter.addWidget(self.plot_widget)
+        self.splitter.addWidget(self.plot)
         layout.addWidget(self.splitter)
 
         # Time Scroll
@@ -896,14 +443,6 @@ class SyncPlayer(QMainWindow):
         self.offset_slider.setValue(30000)
         self.offset_slider.valueChanged.connect(self.update_offset)
 
-        self.offset_minus_btn = QPushButton("-1ms")
-        self.offset_minus_btn.clicked.connect(self.decrement_offset)
-        self.offset_minus_btn.setFixedWidth(50)
-
-        self.offset_plus_btn = QPushButton("+1ms")
-        self.offset_plus_btn.clicked.connect(self.increment_offset)
-        self.offset_plus_btn.setFixedWidth(50)
-
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
         self.speed_combo.setCurrentText("0.25x")
@@ -914,10 +453,33 @@ class SyncPlayer(QMainWindow):
         row_play.addWidget(self.speed_combo)
         row_play.addSpacing(20)
         row_play.addWidget(QLabel("Sync Offset:"))
-        row_play.addWidget(self.offset_minus_btn)
         row_play.addWidget(self.offset_slider)
-        row_play.addWidget(self.offset_plus_btn)
+        self.offset_input = QLineEdit("0")
+        self.offset_input.setFixedWidth(90)
+        self.offset_input.setStyleSheet("color: #00bcd4; font-size: 14px; background-color: #3c3f41; border: 1px solid #555555; border-radius: 4px; padding: 2px 4px;")
+        self.offset_input.setAlignment(Qt.AlignRight)
+        self.offset_input.returnPressed.connect(self.apply_offset_input)
+        row_play.addWidget(self.offset_input)
+        row_play.addWidget(QLabel("ms"))
         ctrls.addLayout(row_play)
+
+        # Row 1b: Video Seek (ms) & IMU Time
+        row_seek = QHBoxLayout()
+        row_seek.addWidget(QLabel("Video Seek (ms):"))
+        self.seek_input = QLineEdit("0")
+        self.seek_input.setFixedWidth(100)
+        self.seek_input.setStyleSheet("color: #ffffff; background-color: #3c3f41; border: 1px solid #555555; border-radius: 4px; padding: 2px 4px;")
+        self.seek_input.setAlignment(Qt.AlignRight)
+        self.seek_input.returnPressed.connect(self.apply_seek_input)
+        row_seek.addWidget(self.seek_input)
+        row_seek.addSpacing(30)
+        row_seek.addWidget(QLabel("IMU Time:"))
+        self.imu_time_lbl = QLabel("0 ms")
+        self.imu_time_lbl.setFixedWidth(120)
+        self.imu_time_lbl.setStyleSheet("color: #69f0ae; font-size: 14px; font-weight: bold;")
+        row_seek.addWidget(self.imu_time_lbl)
+        row_seek.addStretch()
+        ctrls.addLayout(row_seek)
 
         # Row 2: Markers (Grid Layout for better look)
         marker_layout = QHBoxLayout()
@@ -951,12 +513,18 @@ class SyncPlayer(QMainWindow):
         self.abnormal_cb = QCheckBox("Abnormal")
         self.abnormal_cb.setStyleSheet("color: #ff5252; font-weight: bold;")
 
+        self.toggle_spec_btn = QPushButton("Toggle Spectrogram")
+        self.toggle_spec_btn.clicked.connect(self.toggle_spectrogram)
+        self.toggle_spec_btn.setCheckable(True)
+        self.toggle_spec_btn.setChecked(True)
+
         row_act.addStretch()
+        row_act.addWidget(self.toggle_spec_btn)
         row_act.addWidget(self.abnormal_cb)
         row_act.addWidget(clr_btn)
         row_act.addWidget(self.save_btn)
         ctrls.addLayout(row_act)
-
+        
         layout.addLayout(ctrls)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
@@ -965,6 +533,30 @@ class SyncPlayer(QMainWindow):
 
         # Enforce initial visibility state
         self.toggle_spectrogram()
+
+    def _load_master_alignments(self):
+        """Load master alignments CSV into a dict keyed by Repetition name.
+        Computes idx_start/idx_end from Offset, Anchor_Offset, span_start, span_end."""
+        master_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), MASTER_CSV)
+        if not os.path.exists(master_path):
+            print(f"Master alignments not found at {master_path}")
+            return {}
+        try:
+            df = pd.read_csv(master_path)
+            alignments = {}
+            for _, row in df.iterrows():
+                offset = int(row['Offset']) - int(row['Anchor_Offset'])
+                idx_start = int(row['span_start'] + offset)
+                idx_end = int(row['span_end'] + offset)
+                alignments[row['Repetition']] = {
+                    'idx_start': idx_start,
+                    'idx_end': idx_end,
+                }
+            print(f"Loaded {len(alignments)} master alignments")
+            return alignments
+        except Exception as e:
+            print(f"Error loading master alignments: {e}")
+            return {}
 
     def change_speed(self, text):
         rate = float(text.replace('x', ''))
@@ -980,18 +572,21 @@ class SyncPlayer(QMainWindow):
         return btn
 
     def choose_directory(self):
-        p = QFileDialog.getExistingDirectory(self, 
-                                             "Select Root",
-                                             options=QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog)
+        p = QFileDialog.getExistingDirectory(self, "Select Root")
         if p:
             self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
             if self.dirs:
                 self.idx = 0
+                self.load_file(0)
                 self.next_btn.setEnabled(len(self.dirs) > 1)
-                # Use QTimer to delay the opening of the next dialog (ColumnSelection)
-                # This gives the native OS file dialog time to completely close and
-                # release its event loop hooks, fixing the duplicated character typing bug.
-                QTimer.singleShot(50, lambda: self.load_file(0))
+
+    def choose_single_folder(self):
+        p = QFileDialog.getExistingDirectory(self, "Select Folder with Video + IMU")
+        if p:
+            self.dirs = [p]
+            self.idx = 0
+            self.load_file(0)
+            self.next_btn.setEnabled(False)
 
     def detect_obstacle_type(self, path):
         path_lower = path.lower()
@@ -1012,73 +607,23 @@ class SyncPlayer(QMainWindow):
     def load_file(self, i):
         self.clear_all()
         dir_path = self.dirs[i]
-        v, c = find_video_csv_pair(dir_path)
-
-        if not v or not c:
-            QMessageBox.warning(self, "Error", f"Could not find video/CSV pair in {dir_path}")
-            return
+        v, c = find_video_csv_pair(dir_path, prefer_trimmed=self.prefer_trimmed)
 
         # Update tooltips based on file name/path
         obs_type = self.detect_obstacle_type(dir_path)
         self.update_tooltips(obs_type)
 
-        # --- MODAL INTEGRATION ---
-        if not hasattr(self, 'column_config') or self.column_config is None:
-            use_saved = False
-            if os.path.exists(CONFIG_FILE):
-                try:
-                    with open(CONFIG_FILE, 'r') as f:
-                        saved_config = json.load(f)
-
-                    # Format summary of saved config
-                    summary = f"Time Column: {saved_config.get('time_col')}\n\nSeries:\n"
-                    for s in saved_config.get('series', []):
-                        if s['type'] == 'raw':
-                            summary += f"- {s['label']}: Raw Column ({s['col']})\n"
-                        else:
-                            summary += f"- {s['label']}: Vector Mag (X:{s['x']}, Y:{s['y']}, Z:{s['z']})\n"
-
-                    reply = QMessageBox.question(
-                        self, "Saved Configuration Found",
-                        f"A previously saved configuration was found:\n\n{summary}\nWould you like to use this configuration?",
-                        QMessageBox.Yes | QMessageBox.No
-                    )
-
-                    if reply == QMessageBox.Yes:
-                        self.column_config = saved_config
-                        use_saved = True
-                except Exception as e:
-                    print(f"Error reading saved config: {e}")
-
-            if not use_saved:
-                saved_config = None
-                if os.path.exists(CONFIG_FILE):
-                    try:
-                        with open(CONFIG_FILE, 'r') as f:
-                            saved_config = json.load(f)
-                    except:
-                        pass
-                spectrogram_was_visible = self.spectrogram.isVisible()
-                if spectrogram_was_visible:
-                    self.spectrogram.hide()
-                dlg = ColumnSelectionDialog(c, initial_config=saved_config, parent=self)
-                dialog_result = dlg.exec_()
-                if spectrogram_was_visible:
-                    self.spectrogram.show()
-                if dialog_result == QDialog.Accepted:
-                    self.column_config = dlg.result_config
-                    try:
-                        with open(CONFIG_FILE, 'w') as f:
-                            json.dump(self.column_config, f, indent=4)
-                    except Exception as e:
-                        print(f"Error saving config: {e}")
-                else:
-                    return
-
-        df, err = load_data(c, self.column_config, self.lpf_freq)
+        df, _ = load_data(c)
         if df is not None:
-            self.current_df = df
-            self.plot.update_data(df, self.column_config, self.show_lpf, self.lpf_freq, self.show_series)
+            self.plot.update_data(df)
+
+            # Highlight master alignment region if available
+            rep_name = os.path.basename(dir_path)
+            if rep_name in self.master_alignments:
+                align = self.master_alignments[rep_name]
+                self.plot.highlight_region(align['idx_start'], align['idx_end'])
+                print(f"Highlighted master region for {rep_name}: rows {align['idx_start']}..{align['idx_end']}")
+
             if self.cap: self.cap.release()
             self.cap = cv2.VideoCapture(v)
             self.current_video_path = v
@@ -1097,9 +642,9 @@ class SyncPlayer(QMainWindow):
             self.video_time_ms = 0
             self.is_playing = False
             self.play_btn.setText("▶ PLAY")
+            self.seek_input.setText("0")
+            self.update_imu_time_display()
             self.show_frame()
-        else:
-             QMessageBox.critical(self, "Error", f"Failed to load data: {err}")
 
     def toggle_play(self):
         self.is_playing = not self.is_playing
@@ -1108,33 +653,6 @@ class SyncPlayer(QMainWindow):
             self.audio_player.play()
         else:
             self.audio_player.pause()
-
-    def open_plot_settings(self):
-        config = getattr(self, 'column_config', None)
-        dlg = PlotSettingsDialog(self.show_lpf, self.lpf_freq, self.show_series, config, parent=self)
-        if dlg.exec_() == QDialog.Accepted:
-            new_show_lpf = dlg.show_lpf_cb.isChecked()
-            new_lpf_freq = dlg.lpf_spinbox.value()
-            new_show_series = dlg.get_series_visibility()
-
-            recalculate_lpf = False
-            if self.lpf_freq != new_lpf_freq:
-                recalculate_lpf = True
-
-            self.show_lpf = new_show_lpf
-            self.lpf_freq = new_lpf_freq
-            self.show_series = new_show_series
-
-            if self.current_df is not None and hasattr(self, 'column_config'):
-                if recalculate_lpf:
-                    self.current_df = process_data_lpf(self.current_df, self.column_config, self.lpf_freq)
-                self.plot.update_data(self.current_df, self.column_config, self.show_lpf, self.lpf_freq, self.show_series)
-
-                # Restore playhead position and markers after clearing and redrawing plot
-                self.plot.update_cursor(self.video_time_ms, self.offset_ms)
-                for key, time_ms in self.marks.items():
-                    if time_ms is not None:
-                        self.plot.set_marker(key, time_ms, self.offset_ms)
 
     def toggle_spectrogram(self):
         self.spectrogram.setVisible(self.toggle_spec_btn.isChecked())
@@ -1170,6 +688,8 @@ class SyncPlayer(QMainWindow):
                 self.display_img(frame)
                 self.plot.update_cursor(self.video_time_ms, self.offset_ms)
                 self.spectrogram.update_cursor(self.video_time_ms)
+                self.seek_input.setText(str(self.video_time_ms))
+                self.update_imu_time_display()
             else:
                 self.is_playing = False
                 self.play_btn.setText("▶ PLAY")
@@ -1185,6 +705,8 @@ class SyncPlayer(QMainWindow):
                 self.display_img(frame)
                 self.plot.update_cursor(self.video_time_ms, self.offset_ms)
                 self.spectrogram.update_cursor(self.video_time_ms)
+                self.seek_input.setText(str(self.video_time_ms))
+                self.update_imu_time_display()
 
     def show_frame(self):
         if self.cap:
@@ -1201,17 +723,40 @@ class SyncPlayer(QMainWindow):
         self.video_lbl.setPixmap(QPixmap.fromImage(qimg).scaled(self.video_lbl.size(), Qt.KeepAspectRatio))
 
     def update_offset(self, val):
-        self.offset_ms = val - 30000; self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+        self.offset_ms = val - 30000
+        self.offset_input.setText(str(self.offset_ms))
+        self.update_imu_time_display()
+        self.plot.update_cursor(self.video_time_ms, self.offset_ms)
 
-    def decrement_offset(self):
-        val = self.offset_slider.value()
-        if val > self.offset_slider.minimum():
-            self.offset_slider.setValue(val - 1)
+    def apply_offset_input(self):
+        try:
+            val = int(self.offset_input.text())
+            slider_val = max(0, min(60000, val + 30000))
+            self.offset_slider.setValue(slider_val)
+        except ValueError:
+            self.offset_input.setText(str(self.offset_ms))
 
-    def increment_offset(self):
-        val = self.offset_slider.value()
-        if val < self.offset_slider.maximum():
-            self.offset_slider.setValue(val + 1)
+    def apply_seek_input(self):
+        try:
+            seek_ms = int(self.seek_input.text())
+            if self.cap:
+                self.cap.set(cv2.CAP_PROP_POS_MSEC, seek_ms)
+                ret, frame = self.cap.read()
+                if ret:
+                    self.video_time_ms = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                    self.seek_input.setText(str(self.video_time_ms))
+                    self.time_slider.setValue(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)))
+                    self.audio_player.setPosition(self.video_time_ms)
+                    self.display_img(frame)
+                    self.plot.update_cursor(self.video_time_ms, self.offset_ms)
+                    self.spectrogram.update_cursor(self.video_time_ms)
+                    self.update_imu_time_display()
+        except ValueError:
+            self.seek_input.setText(str(self.video_time_ms))
+
+    def update_imu_time_display(self):
+        imu_time = self.video_time_ms + self.offset_ms
+        self.imu_time_lbl.setText(f"{imu_time} ms")
 
     def add_mark(self, key):
         self.marks[key] = self.video_time_ms; self.plot.set_marker(key, self.video_time_ms, self.offset_ms)
@@ -1230,49 +775,131 @@ class SyncPlayer(QMainWindow):
             'Abnormal': self.abnormal_cb.isChecked()
         }
         log.update({f"{k}_ms": v for k, v in self.marks.items()})
-        fieldnames = log.keys()
+        
         exists = os.path.exists(LOG_FILE)
         try:
             with open(LOG_FILE, 'a', newline='') as f:
-                w = csv.DictWriter(f, fieldnames=fieldnames)
+                w = csv.DictWriter(f, fieldnames=log.keys())
                 if not exists: w.writeheader()
                 w.writerow(log)
-            self.is_saved = True
-            QMessageBox.information(self, "Saved", "Data saved successfully.")
+            self.next_file()
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Could not save data: {e}")
 
     def next_file(self):
-        if not self.is_saved:
-            reply = QMessageBox.warning(
-                self, "Unsaved Changes",
-                "You have not saved your data for this file. Are you sure you want to advance to the next file?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if reply == QMessageBox.No:
-                return
-
         if self.idx < len(self.dirs) - 1:
-            self.is_saved = False
-            self.idx += 1
-            self.load_file(self.idx)
+            self.idx += 1; self.load_file(self.idx)
         else:
             QMessageBox.information(self, "Done", "All files in directory processed!")
 
     def keyPressEvent(self, e):
-        focused = self.focusWidget()
-        if not focused or not isinstance(focused, QLineEdit):
-            mapping = {
-                Qt.Key_Space: self.toggle_play,
-                Qt.Key_S: lambda: self.add_mark('stride_start'),
-                Qt.Key_D: lambda: self.add_mark('obs_start'),
-                Qt.Key_F: lambda: self.add_mark('obs_stop'),
-                Qt.Key_G: lambda: self.add_mark('stride_stop')
-            }
-            if e.key() in mapping:
-                mapping[e.key()]()
-                return
+        # Don't intercept keys when typing in an input field
+        focused = QApplication.focusWidget()
+        if isinstance(focused, QLineEdit):
             super().keyPressEvent(e)
+            return
+        mapping = {
+            Qt.Key_Space: self.toggle_play,
+            Qt.Key_S: lambda: self.add_mark('stride_start'),
+            Qt.Key_D: lambda: self.add_mark('obs_start'),
+            Qt.Key_F: lambda: self.add_mark('obs_stop'),
+            Qt.Key_G: lambda: self.add_mark('stride_stop'),
+            Qt.Key_Return: self.save_data
+        }
+        if e.key() in mapping: mapping[e.key()]()
+        else: super().keyPressEvent(e)
+
+def capture_sync_screenshot(video_path, csv_path, seek_ms, offset_ms, output_path, window_s=5.0):
+    """Render a composite screenshot (video frame + IMU plot) without GUI."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as mplt
+
+    # Extract video frame
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_MSEC, seek_ms)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        print(f"Warning: Could not read frame at {seek_ms}ms from {video_path}")
+        return False
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Load and process IMU data
+    df, err = load_data(csv_path)
+    if df is None:
+        print(f"Warning: Could not load CSV: {err}")
+        return False
+
+    mag = np.sqrt(df['Ax']**2 + df['Ay']**2 + df['Az']**2)
+    mag = (mag - np.mean(mag)) / np.std(mag)
+    gmag = np.sqrt(df['Gx']**2 + df['Gy']**2 + df['Gz']**2)
+    gmag = (gmag - np.mean(gmag)) / np.std(gmag)
+    diffs = np.diff(df['Relative_Time_s'])
+    fs = 1.0 / np.mean(diffs) if len(diffs) > 0 else 100.0
+    amag_f = apply_lowpass(mag, 5.0, fs)
+    gmag_f = apply_lowpass(gmag, 5.0, fs)
+
+    # Cursor position in IMU time
+    cursor_s = (seek_ms + offset_ms) / 1000.0
+
+    # Create composite figure
+    fig, (ax_vid, ax_imu) = mplt.subplots(1, 2, figsize=(14, 5), dpi=120,
+                                           gridspec_kw={'width_ratios': [1, 1.5]})
+    fig.patch.set_facecolor('#2b2b2b')
+
+    # Left: video frame
+    ax_vid.imshow(frame_rgb)
+    ax_vid.set_title(f'Video @ {seek_ms}ms', color='white', fontsize=10)
+    ax_vid.axis('off')
+
+    # Right: IMU plot
+    ax_imu.set_facecolor('#1e1e1e')
+    t = df['Relative_Time_s'].values
+    ax_imu.plot(t, mag, color='#80deea', lw=0.8, alpha=0.3)
+    ax_imu.plot(t, amag_f, color='#00bcd4', lw=1.5, label='Accel (5Hz)')
+    ax_imu.plot(t, gmag.values if hasattr(gmag, 'values') else gmag, color='#f069ab', lw=0.8, alpha=0.3)
+    ax_imu.plot(t, gmag_f, color='#69f0ae', lw=1.5, label='Gyro (5Hz)')
+    ax_imu.axvline(x=cursor_s, color='#ff5252', lw=2, label=f'Cursor ({offset_ms:+d}ms offset)')
+    ax_imu.set_xlim(cursor_s - window_s, cursor_s + window_s)
+    ax_imu.set_title(f'IMU — offset: {offset_ms:+d}ms', color='white', fontsize=10)
+    ax_imu.set_xlabel('Time (s)', color='#e0e0e0')
+    ax_imu.tick_params(colors='#e0e0e0')
+    for spine in ax_imu.spines.values():
+        spine.set_color('#555555')
+    ax_imu.grid(True, ls='--', alpha=0.2, color='#555555')
+    ax_imu.legend(fontsize=7, loc='upper left', framealpha=0.2, facecolor='#2b2b2b',
+                  edgecolor='#555555', labelcolor='white')
+
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(output_path, facecolor=fig.get_facecolor())
+    mplt.close(fig)
+    print(f"Saved: {output_path}")
+    return True
+
+
+def batch_screenshots(data_dir, seek_offset_pairs, output_dir, prefer_trimmed=False):
+    """Batch-generate composite screenshots for a list of (seek_ms, offset_ms) pairs."""
+    video_path, csv_path = find_video_csv_pair(data_dir, prefer_trimmed=prefer_trimmed)
+    if not video_path or not csv_path:
+        print(f"Error: Could not find video/CSV pair in {data_dir}")
+        return
+
+    dirname = os.path.basename(os.path.normpath(data_dir))
+    os.makedirs(output_dir, exist_ok=True)
+
+    for seek_ms, offset_ms in seek_offset_pairs:
+        filename = f"{dirname}_seek{seek_ms}_offset{offset_ms}.png"
+        output_path = os.path.join(output_dir, filename)
+        capture_sync_screenshot(video_path, csv_path, seek_ms, offset_ms, output_path)
+
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv); player = SyncPlayer(); player.show(); sys.exit(app.exec_())
+    prefer_trimmed = '--trimmed' in sys.argv
+    if prefer_trimmed:
+        sys.argv.remove('--trimmed')
+    app = QApplication(sys.argv)
+    player = SyncPlayer(prefer_trimmed=prefer_trimmed)
+    player.show()
+    sys.exit(app.exec_())

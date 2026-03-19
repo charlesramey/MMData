@@ -1,0 +1,19 @@
+Iterate over each folder in @"720sync" with name starting "Arya_Flat_" 
+In each such folder, find the video named like @"repn_flat_arya_full_720p.mp4", (where n is some integer).
+The video consists of two camera views to cover the dog's range of motion from right to left, and we need to focus only on the right camera view for this task since the dog's motion starts from the right. 
+The dog is stationary for a period of time at the beginning of the video, followed by the first onset of motion. We need to find the frame number where the pose of the dog is just starting its first stride. 
+See examples of pairs of images of the dog starting stationary, and then just starting its first stride (in @Examples/Examples - Flat):
+
+// Arya_stationary.png to Arya_starting stride.png
+// Goose_stationary.png to Goose_starting stride.png
+// Izzy_stationary.png to Izzy_starting stride.png
+
+Take screenshots of the video at different frame numbers (you may use the tool @view_video_frame.py if helpful) to return the frame number where the pose of the dog indicates the first onset of motion.  Ignore the human. save the screenshot for the resulting frame number.
+If helpful, you could crop a rectangular region of interest from the video, focussing on the dog. For example for Goose in particular, the dog is too far to the right and too small to see clearly; it may (possibly) be helpful to take crops like Goose_stationary_cropped.png or Goose_starting stride_cropped.png to help find the motion onset.
+
+Important notes to avoid common mistakes:
+1. Before zooming in on a candidate region, always do a coarse scan of the full video first. The handler may adjust posture early on (e.g. standing up from a crouch, shifting weight) without actually launching the dog. After such adjustments, the handler and dog often settle back into a stationary waiting position for an extended period before the actual launch. Do not confuse these preparatory adjustments with the true motion onset.
+2. The handler often does a "lead-out" — walking or running ahead while the dog holds a sit-stay. The handler may be in full motion for many frames before the dog breaks its stay. Focus exclusively on when the DOG starts moving, not the handler. Track the dog's position on the turf across frames; if the dog's body hasn't displaced from its spot, it hasn't started moving yet, regardless of what the handler is doing.
+3. The true motion onset is when the dog begins directed forward locomotion toward the left — not just any small positional shift or weight adjustment.
+5. The dog's position in frame varies between dogs and reps — always view a full (uncropped) frame first to locate the dog before choosing a crop region. Do not reuse crop coordinates from a different rep without verifying.
+

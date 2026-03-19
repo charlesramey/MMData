@@ -67,39 +67,5 @@
         </div>
     </div>
     <script type="module" src="main.js"></script>
-
-    <!-- Column Selection Modal -->
-    <div id="columnSelectModal" class="modal">
-        <div class="modal-content">
-            <h2>Select Data Columns</h2>
-            <div id="csvPreviewContainer">
-                <table id="csvPreviewTable">
-                    <!-- Dynamic Headers & Rows -->
-                </table>
-            </div>
-
-            <div class="config-section">
-                <label>Time Column:</label>
-                <select id="selTimeCol"></select>
-            </div>
-
-            <div class="config-section">
-                <label>Mode:</label>
-                <div class="radio-group">
-                    <label><input type="radio" name="dataMode" value="raw" checked> Raw Columns</label>
-                    <label><input type="radio" name="dataMode" value="magnitude"> Vector Magnitude (X,Y,Z)</label>
-                </div>
-            </div>
-
-            <!-- Dynamic Selection Area -->
-            <div id="dataSelectionContainer">
-                <!-- Will be populated by JS based on mode -->
-            </div>
-
-            <div class="modal-footer">
-                <button id="btnConfirmSelection">Load Data</button>
-            </div>
-        </div>
-    </div>
 </body>
 </html>
