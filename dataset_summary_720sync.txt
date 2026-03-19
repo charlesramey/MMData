@@ -1,0 +1,275 @@
+================================================================================
+                      720sync Dataset Analysis
+================================================================================
+Date: 2026-01-31
+
+================================================================================
+                    DETAILED BREAKDOWN PER DOG
+================================================================================
+
+=== Aeros ===
+  Flat:        7
+  Jump:        5
+  Teeter:      4
+  Tunnel:      4
+  Weaves:      3
+  Total:       23
+
+=== Arya ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      4
+  Weaves:      3
+  Total:       31
+
+=== Cayenne ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      1
+  Weaves:      4
+  Total:       29
+
+=== Chester ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       31
+
+=== Delta ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       31
+
+=== Derby ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       31
+
+=== Dolphin ===
+  Aframe:      4
+  Flat:        7
+  Jump:        6
+  Teeter:      4
+  Tunnel:      1
+  Weaves:      4
+  Total:       26
+
+=== Goose ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       31
+
+=== Izzy ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      5
+  Tunnel:      3
+  Weaves:      4
+  Total:       32
+
+=== Jax ===
+  Flat:        6
+  Jump:        6
+  Tunnel:      3
+  Total:       15
+
+=== Jyn ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       31
+
+=== Kahlua ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      4
+  Weaves:      4
+  Total:       32
+
+=== Nico ===
+  Aframe:      4
+  Dogwalk:     3
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       30
+
+=== Noodle ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        7
+  Jump:        6
+  Teeter:      4
+  Tunnel:      2
+  Weaves:      4
+  Total:       31
+
+=== Pizza ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        7
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       32
+
+=== Raina ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        7
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       32
+
+=== Revv ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      5
+  Tunnel:      3
+  Weaves:      5
+  Total:       33
+
+=== Rockett ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        7
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      3
+  Total:       31
+
+=== Rumchata ===
+  Aframe:      4
+  Dogwalk:     3
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       30
+
+=== Sass ===
+  Aframe:      4
+  Dogwalk:     4
+  Flat:        6
+  Jump:        2
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       27
+
+=== Tigger ===
+  Aframe:      3
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       30
+
+=== Vivi ===
+  Aframe:      5
+  Dogwalk:     4
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      3
+  Total:       31
+
+=== Zazu ===
+  Aframe:      4
+  Dogwalk:     5
+  Flat:        6
+  Jump:        6
+  Teeter:      4
+  Tunnel:      3
+  Weaves:      4
+  Total:       32
+
+
+================================================================================
+                        HIGH-LEVEL SUMMARY
+================================================================================
+
+Total Unique Dogs:              23
+Total Unique Obstacles:          7
+Total Folders:                 682
+
+Dog Names (alphabetical):
+  1. Aeros        2. Arya         3. Cayenne      4. Chester
+  5. Delta        6. Derby        7. Dolphin      8. Goose
+  9. Izzy        10. Jax         11. Jyn         12. Kahlua
+ 13. Nico        14. Noodle      15. Pizza       16. Raina
+ 17. Revv        18. Rockett     19. Rumchata    20. Sass
+ 21. Tigger      22. Vivi        23. Zazu
+
+Obstacle Types:
+  1. Aframe      - 20 dogs (87% coverage)
+  2. Dogwalk     - 20 dogs (87% coverage)
+  3. Flat        - 23 dogs (100% coverage)
+  4. Jump        - 23 dogs (100% coverage)
+  5. Teeter      - 22 dogs (96% coverage)
+  6. Tunnel      - 22 dogs (96% coverage)
+  7. Weaves      - 21 dogs (91% coverage)
+
+Average Repetitions per Dog:     29.7
+Min Repetitions (Jax):           15
+Max Repetitions (Revv):          33
+
+Dogs with Most Complete Data (all 7 obstacles):
+  - Arya, Chester, Delta, Derby, Goose, Jyn, Kahlua, Nico, Noodle,
+    Pizza, Raina, Revv, Rockett, Rumchata, Tigger, Vivi, Zazu
+
+Dogs with Missing Obstacles:
+  - Aeros: Missing Aframe, Dogwalk (5/7 obstacles)
+  - Dolphin: Missing Dogwalk (6/7 obstacles)
+  - Jax: Only has Flat, Jump, Tunnel (3/7 obstacles)
+  - Sass: Has all 7 but fewer Jump repetitions
+
+================================================================================
+End of Report
+================================================================================

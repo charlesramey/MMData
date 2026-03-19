@@ -206,5 +206,28 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .DS_Store
-test_input.py
-MMData_bckup.py
+
+# Audio files
+*.wav
+
+# Images
+*.png
+*.jpg
+*.jpeg
+
+# But track images in Examples/ (temporarily disabled)
+#!Examples/**/*.png
+#!Examples/**/*.jpg
+#!Examples/**/*.jpeg
+
+# Data/output folders
+tmp/
+pizza_jump_frames/
+720sync/
+Arya Aframe/
+Arya_Flat/
+Arya_Teeter/
+FIXEDMasterAlignments/
+
+# Docs
+find_apex_aframe_Derby.md

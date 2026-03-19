@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(ls /Users/DiptiVM1/Projects/MMData/720sync/Derby_Aframe_1/*trimmed* 2>/dev/null; ls /Users/DiptiVM1/Projects/MMData/720sync/Derby_Aframe_2/*trimmed* 2>/dev/null; ls /Users/DiptiVM1/Projects/MMData/720sync/Arya_Aframe_2/*trimmed* 2>/dev/null; find /Users/DiptiVM1/Projects/MMData/720sync -name \"*trimmed*\" -type f | head -5)",
+      "Bash(ls 720sync/Derby_Aframe_1/*.csv)",
+      "Bash(ls -1d /Users/DiptiVM1/Projects/MMData/720sync/Derby_Tunnel_* 2>/dev/null)",
+      "Bash(ls -1d /Users/DiptiVM1/Projects/MMData/Examples* 2>/dev/null)",
+      "Bash(find /Users/DiptiVM1/Projects/MMData/720sync/Derby_Tunnel_* -name \"*.mp4\" -type f)",
+      "Bash(ls -d /Users/DiptiVM1/Projects/MMData/720sync/*_Tunnel_* | sort)",
+      "Bash(find /Users/DiptiVM1/Projects/MMData/720sync/*_Tunnel_* -name \"*first_leap*\" 2>/dev/null | sort)",
+      "Bash(python find_first_peak.py 720sync/Arya_Tunnel_2/Arya_tunnel_2_trimmed.csv)",
+      "Bash(python find_first_peak.py 720sync/Arya_Tunnel_2/Arya_tunnel_2_trimmed.csv --signal gmag)",
+      "Bash(python tunnel_aligner.py 720sync/Arya_Tunnel_2)",
+      "Bash(python tunnel_aligner.py 720sync/Goose_Tunnel_1)"
+    ]
+  }
+}
