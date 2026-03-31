@@ -28,19 +28,13 @@ header {
     padding: 10px 20px;
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 12px;
     border-bottom: 1px solid #444;
     flex: 0 0 auto;
+    flex-wrap: wrap;
 }
 
-/* Wider slider for finer control */
-#rngOffset {
-    width: 400px;
-    max-width: 50vw;
-    cursor: pointer;
-}
-
-h1 { margin: 0; font-size: 1.2rem; color: #00bcd4; }
+h1 { margin: 0; font-size: 1.2rem; color: #00bcd4; white-space: nowrap; }
 
 button {
     background-color: #3c3f41;
@@ -49,6 +43,7 @@ button {
     color: white;
     padding: 6px 12px;
     cursor: pointer;
+    font-size: 13px;
 }
 
 button:hover { background-color: #484b4d; border-color: #666; }
@@ -58,7 +53,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     flex: 1;
     display: flex;
     flex-direction: column;
-    /* Removed padding to minimize wasted space */
     padding: 0;
     overflow: hidden;
     background: #111;
@@ -68,23 +62,20 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     min-height: 50px;
     position: relative;
     overflow: hidden;
-    /* Default flex behavior */
     flex: 1 1 auto;
 }
 
 #video-container {
-    flex: 5 1 auto; /* Higher weight for video */
+    flex: 5 1 auto;
     background: black;
     display: flex;
     flex-direction: column;
     justify-content: center;
     align-items: center;
-    /* Ensure no internal padding wastes space */
     padding: 0;
 }
 
 video {
-    /* Maximize width/height to fill container, but preserve aspect ratio */
     width: 100%;
     height: 100%;
     object-fit: contain;
@@ -113,9 +104,9 @@ video {
     height: 100%;
 }
 
-/* Splitter Styling */
+/* Splitter */
 .splitter {
-    height: 8px; /* Slightly larger target */
+    height: 8px;
     background: #333;
     cursor: row-resize;
     flex: 0 0 8px;
@@ -127,10 +118,11 @@ video {
     background: #00bcd4;
 }
 
+/* Controls */
 #controls {
     flex: 0 0 auto;
     background-color: #1e1e1e;
-    padding: 15px;
+    padding: 12px 15px;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -140,9 +132,30 @@ video {
 .row {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 12px;
+    flex-wrap: wrap;
 }
 
+/* Offset controls row */
+.offset-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.offset-btn {
+    padding: 4px 8px;
+    font-size: 12px;
+    min-width: 44px;
+}
+
+#rngOffset {
+    width: 380px;
+    max-width: 40vw;
+    cursor: pointer;
+}
+
+/* Marker buttons */
 .grid-markers {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -151,23 +164,47 @@ video {
 
 .marker-btn { font-weight: bold; padding: 10px; }
 .stride-start { border-bottom: 3px solid #448aff; }
-.obs-start { border-bottom: 3px solid #69f0ae; }
-.obs-stop { border-bottom: 3px solid #ff5252; }
-.stride-stop { border-bottom: 3px solid #e040fb; }
+.obs-start    { border-bottom: 3px solid #69f0ae; }
+.obs-stop     { border-bottom: 3px solid #ff5252; }
+.stride-stop  { border-bottom: 3px solid #e040fb; }
 
-#btnSave { background-color: #00bcd4; font-weight: bold; margin-left: auto; }
+/* Actions row */
+.abnormal-label {
+    color: #ff5252;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+#btnSave  { background-color: #00bcd4; font-weight: bold; padding: 8px 16px; margin-left: auto; }
 #btnClear { background-color: #5d4037; }
 
-/* Modal Styles */
+/* Tooltip support via title on marker btns */
+[title]:hover::after {
+    content: attr(title);
+    position: absolute;
+    bottom: 110%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    font-size: 12px;
+    z-index: 100;
+    pointer-events: none;
+    max-width: 320px;
+}
+
+/* ── Modals ─────────────────────────────────────────── */
 .modal {
-    display: none; /* Hidden by default */
+    display: none;
     position: fixed;
     z-index: 1000;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    overflow: auto;
+    inset: 0;
     background-color: rgba(0,0,0,0.8);
     align-items: center;
     justify-content: center;
@@ -175,11 +212,10 @@ video {
 
 .modal-content {
     background-color: #2b2b2b;
-    margin: 5% auto;
-    padding: 20px;
-    border: 1px solid #888;
+    padding: 24px;
+    border: 1px solid #666;
     width: 80%;
-    max-width: 900px;
+    max-width: 520px;
     max-height: 90vh;
     overflow-y: auto;
     border-radius: 8px;
@@ -192,80 +228,67 @@ video {
     padding-bottom: 10px;
 }
 
-#csvPreviewContainer {
-    max-height: 200px;
-    overflow: auto;
-    margin-bottom: 20px;
-    border: 1px solid #444;
-}
+/* Plot Settings Modal */
+.modal-small { max-width: 420px; }
 
-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.9em;
-}
-
-th, td {
-    padding: 8px;
-    text-align: left;
-    border-bottom: 1px solid #444;
-}
-
-th {
-    background-color: #333;
-    position: sticky;
-    top: 0;
-}
-
-tr:hover {background-color: #3a3a3a;}
-
-.config-section {
-    margin-bottom: 20px;
-}
-
-.config-section label {
-    display: block;
-    margin-bottom: 5px;
-    font-weight: bold;
-}
-
-.radio-group label {
-    display: inline-block;
-    margin-right: 20px;
-    font-weight: normal;
-    cursor: pointer;
-}
-
-#dataSelectionContainer {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 20px;
-    margin-bottom: 20px;
-    padding: 15px;
+.settings-group {
     background: #222;
     border-radius: 4px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
-.data-group {
-    background: #333;
-    padding: 10px;
-    border-radius: 4px;
-}
-
-.data-group h4 {
-    margin: 0 0 10px 0;
+.settings-section-label {
+    font-weight: bold;
     color: #00bcd4;
+    font-size: 0.85em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
 }
 
-.field-row {
+.cb-row {
     display: flex;
     align-items: center;
-    margin-bottom: 8px;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 14px;
 }
 
-.field-row label {
-    width: 30px;
-    margin-right: 10px;
+.lpf-freq-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.lpf-freq-row label { font-size: 14px; }
+
+#inpLPFFreq {
+    background: #444;
+    color: white;
+    border: 1px solid #666;
+    padding: 5px 8px;
+    border-radius: 4px;
+    width: 80px;
+    font-size: 14px;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-top: 15px;
+    border-top: 1px solid #444;
+}
+
+.btn-primary {
+    background-color: #00bcd4;
+    font-size: 1em;
+    font-weight: bold;
+    padding: 8px 20px;
 }
 
 select {
@@ -273,19 +296,5 @@ select {
     color: white;
     border: 1px solid #666;
     padding: 5px;
-    width: 100%;
     border-radius: 4px;
-}
-
-.modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    padding-top: 15px;
-    border-top: 1px solid #444;
-}
-
-#btnConfirmSelection {
-    background-color: #00bcd4;
-    font-size: 1.1em;
-    padding: 10px 20px;
 }

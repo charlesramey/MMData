@@ -1,336 +1,400 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// MMData Web Sync Tool  –  main.js
+// Hardcoded data series: Accel Magnitude (Ax,Ay,Az), Gyro Magnitude (Gx,Gy,Gz),
+// Pressure (raw scalar).  Time column auto-detected.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// State
-let rootHandle = null;
-let filePairs = [];
-let currentIdx = -1;
-let syncLogHandle = null;
-let globalAudioBuffer = null;
-let columnConfig = null;
-
-// DOM Elements
-const btnOpenDir = document.getElementById('btnOpenDir');
-const btnNextFile = document.getElementById('btnNextFile');
-const lblCurrentFile = document.getElementById('lblCurrentFile');
-const fileInput = document.getElementById('fileInput');
-
-// Playhead & Marker Plugin for Chart.js
-const markerColors = {
-    stride_start: '#448aff',
-    obs_start: '#69f0ae',
-    obs_stop: '#ff5252',
-    stride_stop: '#e040fb'
+// ── Obstacle Tooltips (mirrors desktop TOOLTIPS dict) ─────────────────────────
+const TOOLTIPS = {
+    jump: {
+        stride_start: 'Jump STRIDE_START: First front paw contact that initiates the stride before the takeoff stride sequence (includes 8 paw strikes before last paw leaves ground).',
+        obs_start:    'Jump OBS_START: Last paw leaves the ground for takeoff (should be a rear paw).',
+        obs_stop:     'Jump OBS_STOP: First paw contacts the ground after the jump (should be a front paw).',
+        stride_stop:  'Jump STRIDE_STOP: The last rear paw has left the ground of the stride following the landing stride (includes 8 paw strikes from first landing contact).'
+    },
+    tunnel: {
+        stride_start: 'Tunnel STRIDE_START: First paw contact of the stride immediately before CORE_START.',
+        obs_start:    'Tunnel OBS_START: Nose breaks the entry plane of the tunnel opening.',
+        obs_stop:     'Tunnel OBS_STOP: Last paw fully clears the exit plane of the tunnel opening.',
+        stride_stop:  'Tunnel STRIDE_STOP: Completion of the stride immediately after CORE_STOP (last paw off or next clear contact).'
+    },
+    teeter: {
+        stride_start: 'Teeter STRIDE_START: First paw contact of the approach stride.',
+        obs_start:    'Teeter OBS_START: Nose breaks the plane of the teeter entry.',
+        obs_stop:     'Teeter OBS_STOP: Last paw leaves contact with the teeter board.',
+        stride_stop:  'Teeter STRIDE_STOP: Completion of the stride after last paw leaves the board (after release).'
+    },
+    aframe: {
+        stride_start: 'A-frame STRIDE_START: First paw contact of the approach stride.',
+        obs_start:    'A-frame OBS_START: Nose breaks the entry plane/threshold of the A-frame.',
+        obs_stop:     'A-frame OBS_STOP: Last paw leaves contact with the A-frame.',
+        stride_stop:  'A-frame STRIDE_STOP: Completion of the stride after last paw leaves the A-frame.'
+    },
+    dogwalk: {
+        stride_start: 'Dogwalk STRIDE_START: First paw contact of the approach stride.',
+        obs_start:    'Dogwalk OBS_START: Nose breaks the entry plane of the dogwalk (start of up plank).',
+        obs_stop:     'Dogwalk OBS_STOP: Last paw leaves contact with the dogwalk.',
+        stride_stop:  'Dogwalk STRIDE_STOP: Completion of the stride after last paw leaves the dogwalk.'
+    },
+    weave: {
+        stride_start: 'Weave STRIDE_START: First paw contact of the stride immediately before OBS_START.',
+        obs_start:    'Weave OBS_START: First frame where the dog\'s nose breaks the plane of pole 1.',
+        obs_stop:     'Weave OBS_STOP: Last paw crosses the plane of the last pole (pole 12).',
+        stride_stop:  'Weave STRIDE_STOP: Completion of the stride immediately after OBS_STOP.'
+    },
+    flat: {
+        stride_start: 'Generic STRIDE_START',
+        obs_start:    'Generic OBS_START',
+        obs_stop:     'Generic OBS_STOP',
+        stride_stop:  'Generic STRIDE_STOP'
+    }
 };
 
+// ── State ─────────────────────────────────────────────────────────────────────
+let rootHandle    = null;
+let filePairs     = [];
+let currentIdx    = -1;
+let syncLogHandle = null;
+let globalAudioBuffer = null;
+let isSaved       = true;   // tracks whether current file has been saved
+
+// Plot settings (mirrors desktop defaults)
+let showLPF     = true;
+let lpfFreq     = 5.0;
+let showSeries  = [true, true, true]; // accel, gyro, pressure
+
+// Hardcoded column config – auto-detected per file from CSV headers
+// Populated in detectColumnConfig()
+let columnConfig = null;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const btnOpenDir    = document.getElementById('btnOpenDir');
+const btnNextFile   = document.getElementById('btnNextFile');
+const lblCurrentFile= document.getElementById('lblCurrentFile');
+const fileInput     = document.getElementById('fileInput');
+const videoPlayer   = document.getElementById('videoPlayer');
+const btnPlay       = document.getElementById('btnPlay');
+const selSpeed      = document.getElementById('selSpeed');
+const rngOffset     = document.getElementById('rngOffset');
+const lblOffset     = document.getElementById('lblOffset');
+const btnOffsetMinus= document.getElementById('btnOffsetMinus');
+const btnOffsetPlus = document.getElementById('btnOffsetPlus');
+const btnToggleSpec = document.getElementById('btnToggleSpec');
+const btnPlotSettings= document.getElementById('btnPlotSettings');
+
+let syncOffsetMs  = 30000;
+let showSpectrogram = true;
+let sensorChart   = null;
+
+// ── Marker colours (match desktop) ───────────────────────────────────────────
+const markerColors = {
+    stride_start: '#448aff',
+    obs_start:    '#69f0ae',
+    obs_stop:     '#ff5252',
+    stride_stop:  '#e040fb'
+};
+
+// ── Chart.js playhead plugin ──────────────────────────────────────────────────
 const playheadPlugin = {
     id: 'playhead',
-    afterDatasetsDraw: (chart) => {
-        if (!videoPlayer) return;
-
-        const ctx = chart.ctx;
+    afterDatasetsDraw(chart) {
+        if (!videoPlayer || !chart.scales.x) return;
+        const ctx  = chart.ctx;
         const area = chart.chartArea;
-        const top = area.top;
-        const bottom = area.bottom;
-
-        // Ensure x scale exists
-        if (!chart.scales.x) return;
-
-        // Apply sync offset (syncOffsetMs is centered at 30000)
-        // Offset = (Slider - 30000) ms
         const offsetSec = (syncOffsetMs - 30000) / 1000.0;
 
-        // Helper function to draw vertical line
-        const drawLine = (timeVal, color, lineWidth = 2, isDashed = false) => {
+        const drawLine = (timeVal, color, lineWidth = 2, dashed = false) => {
             const x = chart.scales.x.getPixelForValue(timeVal);
             if (x < area.left || x > area.right) return;
-
             ctx.save();
             ctx.beginPath();
-            ctx.moveTo(x, top);
-            ctx.lineTo(x, bottom);
+            ctx.moveTo(x, area.top);
+            ctx.lineTo(x, area.bottom);
             ctx.lineWidth = lineWidth;
             ctx.strokeStyle = color;
-            if (isDashed) ctx.setLineDash([5, 5]);
-            else ctx.setLineDash([]);
+            ctx.setLineDash(dashed ? [5,5] : []);
             ctx.stroke();
             ctx.restore();
         };
 
-        // 1. Draw Playhead
-        const currentTime = videoPlayer.currentTime; // seconds
-        drawLine(currentTime + offsetSec, 'white', 2, false);
+        // Playhead
+        drawLine(videoPlayer.currentTime + offsetSec, 'white', 2);
 
-        // 2. Draw Markers
+        // Markers
         for (const [key, ms] of Object.entries(marks)) {
-            if (ms !== null) {
-                const sec = ms / 1000.0;
-                // Markers are on video timeline, so shift by offset to match chart
-                drawLine(sec + offsetSec, markerColors[key] || 'yellow', 3, false);
-            }
+            if (ms !== null) drawLine(ms / 1000.0 + offsetSec, markerColors[key] || 'yellow', 3);
         }
     }
 };
 
-// Setup
+// ── Init ──────────────────────────────────────────────────────────────────────
 setupSplitters();
 setupResizeObserver();
 
+// ── Open Directory ────────────────────────────────────────────────────────────
 btnOpenDir.addEventListener('click', async () => {
     if ('showDirectoryPicker' in window) {
         try {
             rootHandle = await window.showDirectoryPicker();
-            filePairs = [];
+            filePairs  = [];
             await scanDirectory(rootHandle);
             finishScan();
         } catch (err) {
-            console.error("Error opening directory:", err);
+            console.error('Error opening directory:', err);
         }
     } else {
-        // Fallback
         fileInput.click();
     }
 });
 
-fileInput.addEventListener('change', (e) => {
-    const files = Array.from(e.target.files);
-    filePairs = scanFileList(files);
+fileInput.addEventListener('change', e => {
+    filePairs = scanFileList(Array.from(e.target.files));
     finishScan();
 });
 
 async function finishScan() {
     filePairs.sort((a, b) => a.dirName.localeCompare(b.dirName));
-    if (filePairs.length > 0) {
-        currentIdx = 0;
-        // In fallback mode, syncLogHandle remains null
-        if (rootHandle) {
-            rootHandle.getFileHandle('sync_log.csv', { create: true })
-                .then(h => syncLogHandle = h)
-                .catch(e => console.warn("Could not access sync_log.csv", e));
-        }
+    if (filePairs.length === 0) { alert('No video/CSV pairs found.'); return; }
 
-        // --- MODAL INTEGRATION ---
-        // Load the first CSV to get headers and show selection modal
-        try {
-            const firstCsv = await filePairs[0].csv.getFile();
-            const text = await firstCsv.text();
+    currentIdx = 0;
+    isSaved    = true;
 
-            // Reset config and show modal
-            columnConfig = null;
-            showColumnSelectionModal(text);
-        } catch (e) {
-            console.error("Error reading first CSV for configuration", e);
-            alert("Error reading CSV file.");
-        }
-
-        btnNextFile.disabled = filePairs.length <= 1;
-    } else {
-        alert("No video/CSV pairs found.");
+    if (rootHandle) {
+        rootHandle.getFileHandle('sync_log.csv', { create: true })
+            .then(h => syncLogHandle = h)
+            .catch(e => console.warn('Could not access sync_log.csv', e));
     }
+
+    btnNextFile.disabled = filePairs.length <= 1;
+    loadFile(0);
 }
 
-btnNextFile.addEventListener('click', () => {
-    if (currentIdx < filePairs.length - 1) {
-        currentIdx++;
-        loadFile(currentIdx);
-    } else {
-        alert("Done! All files processed.");
-    }
-});
-
-// Native FS API Scan
-async function scanDirectory(dirHandle, path = "") {
-    let videoHandle = null;
-    let csvHandle = null;
-
+// ── Directory / File scanning ─────────────────────────────────────────────────
+async function scanDirectory(dirHandle) {
+    let videoHandle = null, csvHandle = null;
     for await (const entry of dirHandle.values()) {
         if (entry.kind === 'file') {
-            const name = entry.name.toLowerCase();
-            if (name.endsWith('.mp4') || name.endsWith('.avi') || name.endsWith('.mov')) {
-                if (!videoHandle) videoHandle = entry;
-            } else if (name.endsWith('.csv') && name !== 'sync_log.csv') {
-                if (!csvHandle) csvHandle = entry;
-            }
+            const n = entry.name.toLowerCase();
+            if (!videoHandle && (n.endsWith('.mp4') || n.endsWith('.avi') || n.endsWith('.mov')))
+                videoHandle = entry;
+            else if (!csvHandle && n.endsWith('.csv') && n !== 'sync_log.csv')
+                csvHandle = entry;
         } else if (entry.kind === 'directory') {
-            await scanDirectory(entry, path + entry.name + "/");
+            await scanDirectory(entry);
         }
     }
-
     if (videoHandle && csvHandle) {
-        // Wrapper for getFile()
         filePairs.push({
             dirName: dirHandle.name,
+            videoName: videoHandle.name,
             video: { getFile: () => videoHandle.getFile() },
-            csv: { getFile: () => csvHandle.getFile() },
-            path: path
+            csv:   { getFile: () => csvHandle.getFile()   }
         });
     }
 }
 
-// Input Element Scan
 function scanFileList(files) {
-    const pairs = [];
     const dirs = {};
-
-    // Group by directory path
     files.forEach(f => {
-        const path = f.webkitRelativePath || f.name;
-        const parts = path.split('/');
+        const parts   = (f.webkitRelativePath || f.name).split('/');
         const dirPath = parts.slice(0, -1).join('/');
         const dirName = parts.length > 1 ? parts[parts.length - 2] : 'root';
-
-        if (!dirs[dirPath]) dirs[dirPath] = { video: null, csv: null, dirName: dirName };
-
-        const name = f.name.toLowerCase();
-        if (name.endsWith('.mp4') || name.endsWith('.avi') || name.endsWith('.mov')) {
-            dirs[dirPath].video = f;
-        } else if (name.endsWith('.csv') && name !== 'sync_log.csv') {
+        if (!dirs[dirPath]) dirs[dirPath] = { video: null, videoName: null, csv: null, dirName };
+        const n = f.name.toLowerCase();
+        if (!dirs[dirPath].video && (n.endsWith('.mp4') || n.endsWith('.avi') || n.endsWith('.mov'))) {
+            dirs[dirPath].video     = f;
+            dirs[dirPath].videoName = f.name;
+        } else if (!dirs[dirPath].csv && n.endsWith('.csv') && n !== 'sync_log.csv') {
             dirs[dirPath].csv = f;
         }
     });
-
-    for (const d of Object.values(dirs)) {
-        if (d.video && d.csv) {
-            pairs.push({
-                dirName: d.dirName,
-                video: { getFile: async () => d.video },
-                csv: { getFile: async () => d.csv }
-            });
-        }
-    }
-    return pairs;
+    return Object.values(dirs)
+        .filter(d => d.video && d.csv)
+        .map(d => ({
+            dirName:   d.dirName,
+            videoName: d.videoName,
+            video: { getFile: async () => d.video },
+            csv:   { getFile: async () => d.csv   }
+        }));
 }
 
-async function loadFile(idx) {
-    const pair = filePairs[idx];
-    lblCurrentFile.textContent = `File: ${pair.dirName} (${detectObstacle(pair.dirName)})`;
-
-    // Load Video
-    const vidFile = await pair.video.getFile();
-    const vidURL = URL.createObjectURL(vidFile);
-    const videoPlayer = document.getElementById('videoPlayer');
-    videoPlayer.src = vidURL;
-    videoPlayer.playbackRate = parseFloat(document.getElementById('selSpeed').value);
-
-    // Load CSV Data
-    const csvFile = await pair.csv.getFile();
-    const csvText = await csvFile.text();
-    processCSV(csvText);
-
-    // Setup Audio Context for Spectrogram
-    setupSpectrogram(vidFile);
-
-    // Reset Sync Offset to 0ms (Slider center = 30000)
-    syncOffsetMs = 30000;
-    rngOffset.value = 30000;
-    lblOffset.textContent = "0 ms";
-
-    // Clear marks
-    clearMarks();
-
-    // Update cursor immediately
-    updateCursor(0);
-}
-
+// ── Obstacle detection & tooltips ─────────────────────────────────────────────
 function detectObstacle(path) {
     const p = path.toLowerCase();
-    if (p.includes('jump')) return 'JUMP';
-    if (p.includes('tunnel')) return 'TUNNEL';
-    if (p.includes('teeter')) return 'TEETER';
-    if (p.includes('weave')) return 'WEAVE';
-    if (p.includes('dogwalk')) return 'DOGWALK';
-    if (p.includes('aframe') || p.includes('a-frame')) return 'AFRAME';
-    return 'FLAT';
+    if (p.includes('jump'))    return 'jump';
+    if (p.includes('tunnel'))  return 'tunnel';
+    if (p.includes('teeter'))  return 'teeter';
+    if (p.includes('weave'))   return 'weave';
+    if (p.includes('dogwalk')) return 'dogwalk';
+    if (p.includes('aframe') || p.includes('a-frame')) return 'aframe';
+    return 'flat';
 }
 
-// Splitter & Layout Logic
-function setupSplitters() {
-    const splitters = document.querySelectorAll('.splitter');
-    splitters.forEach(splitter => {
-        splitter.addEventListener('mousedown', initDrag);
-    });
-
-    function initDrag(e) {
-        e.preventDefault();
-        const splitter = e.target;
-        const prev = splitter.previousElementSibling;
-        const next = splitter.nextElementSibling;
-
-        if (!prev || !next) return;
-
-        // Get initial heights
-        const prevRect = prev.getBoundingClientRect();
-        const nextRect = next.getBoundingClientRect();
-        const startH = prevRect.height;
-        const nextH = nextRect.height;
-        const startY = e.clientY;
-
-        // Switch to fixed sizing (flex-basis) to control precise pixels
-        // flex: 0 0 basis
-        prev.style.flex = `0 0 ${startH}px`;
-        next.style.flex = `0 0 ${nextH}px`;
-
-        splitter.classList.add('active');
-        document.body.style.cursor = 'row-resize';
-
-        function onMouseMove(e) {
-            e.preventDefault();
-            const dy = e.clientY - startY;
-            const newPrevH = startH + dy;
-            const newNextH = nextH - dy;
-
-            // Min height constraint (e.g. 50px)
-            if (newPrevH > 50 && newNextH > 50) {
-                prev.style.flexBasis = `${newPrevH}px`;
-                next.style.flexBasis = `${newNextH}px`;
-            }
-        }
-
-        function onMouseUp() {
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-            splitter.classList.remove('active');
-            document.body.style.cursor = 'default';
-
-            // Ensure Chart resizes if involved
-            if (sensorChart) sensorChart.resize();
-        }
-
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
+function updateTooltips(obsType) {
+    const tips = TOOLTIPS[obsType] || TOOLTIPS.flat;
+    const btnMap = {
+        stride_start: document.getElementById('btnStrideStart'),
+        obs_start:    document.getElementById('btnObsStart'),
+        obs_stop:     document.getElementById('btnObsStop'),
+        stride_stop:  document.getElementById('btnStrideStop')
+    };
+    for (const [key, btn] of Object.entries(btnMap)) {
+        if (btn) btn.title = tips[key] || '';
     }
+}
+
+// ── Hardcoded column config auto-detection ────────────────────────────────────
+// Series: Accel Magnitude (Ax,Ay,Az), Gyro Magnitude (Gx,Gy,Gz), Pressure (scalar)
+// Time column: first column whose name contains "time" / "ts" / "timestamp"
+function detectColumnConfig(headers) {
+    const hl = headers.map(h => h.toLowerCase());
+
+    // Time column
+    let timeCol = headers.find((h, i) =>
+        hl[i] === 'time' || hl[i] === 'ts' || hl[i] === 'timestamp' || hl[i].includes('time'));
+    if (!timeCol) timeCol = headers[0]; // fallback to first column
+
+    // Helper: find a header that starts with a given prefix (case-insensitive)
+    const find = prefix => headers.find(h => h.toLowerCase().startsWith(prefix.toLowerCase())) || null;
+
+    const series = [];
+
+    // Series 1 – Accel Magnitude
+    const ax = find('Ax'), ay = find('Ay'), az = find('Az');
+    if (ax && ay && az) {
+        series.push({ type: 'magnitude', x: ax, y: ay, z: az, label: 'Accel Mag' });
+    }
+
+    // Series 2 – Gyro Magnitude
+    const gx = find('Gx'), gy = find('Gy'), gz = find('Gz');
+    if (gx && gy && gz) {
+        series.push({ type: 'magnitude', x: gx, y: gy, z: gz, label: 'Gyro Mag' });
+    }
+
+    // Series 3 – Pressure (scalar)
+    const pressure = find('pressure') || find('baro') || find('press');
+    if (pressure) {
+        series.push({ type: 'raw', col: pressure, label: 'Pressure' });
+    }
+
+    return { timeCol, series };
+}
+
+// ── Load file ─────────────────────────────────────────────────────────────────
+async function loadFile(idx) {
+    const pair = filePairs[idx];
+    const obsType = detectObstacle(pair.dirName);
+    lblCurrentFile.textContent = `File: ${pair.dirName} (${obsType.toUpperCase()})`;
+    updateTooltips(obsType);
+
+    // Load video
+    const vidFile = await pair.video.getFile();
+    videoPlayer.src = URL.createObjectURL(vidFile);
+    videoPlayer.playbackRate = parseFloat(selSpeed.value);
+
+    // Load & parse CSV to detect columns (first time or per file)
+    const csvFile  = await pair.csv.getFile();
+    const csvText  = await csvFile.text();
+
+    // Auto-detect column config from CSV headers
+    const parseResult = Papa.parse(csvText, { header: true, preview: 1, skipEmptyLines: true });
+    if (parseResult.meta && parseResult.meta.fields) {
+        columnConfig = detectColumnConfig(parseResult.meta.fields);
+    } else {
+        console.error('Could not parse CSV headers');
+        alert('Could not parse CSV headers.');
+        return;
+    }
+
+    processCSV(csvText);
+    setupSpectrogram(vidFile);
+
+    // Reset offset
+    syncOffsetMs    = 30000;
+    rngOffset.value = 30000;
+    lblOffset.textContent = '0 ms';
+
+    clearMarks();
+    updateCursor(0);
+
+    isSaved = false;
+}
+
+// ── Next file (with unsaved-changes guard) ────────────────────────────────────
+btnNextFile.addEventListener('click', () => {
+    if (!isSaved) {
+        if (!confirm('You have not saved your data for this file. Are you sure you want to advance to the next file?')) {
+            return;
+        }
+    }
+    if (currentIdx < filePairs.length - 1) {
+        currentIdx++;
+        isSaved = true; // reset before loading new
+        loadFile(currentIdx);
+    } else {
+        alert('Done! All files processed.');
+    }
+});
+
+// ── Splitters ─────────────────────────────────────────────────────────────────
+function setupSplitters() {
+    document.querySelectorAll('.splitter').forEach(splitter => {
+        splitter.addEventListener('mousedown', e => {
+            e.preventDefault();
+            const prev = splitter.previousElementSibling;
+            const next = splitter.nextElementSibling;
+            if (!prev || !next) return;
+
+            const startH = prev.getBoundingClientRect().height;
+            const nextH  = next.getBoundingClientRect().height;
+            const startY = e.clientY;
+
+            prev.style.flex = `0 0 ${startH}px`;
+            next.style.flex = `0 0 ${nextH}px`;
+            splitter.classList.add('active');
+            document.body.style.cursor = 'row-resize';
+
+            const onMove = e => {
+                e.preventDefault();
+                const dy = e.clientY - startY;
+                const np = startH + dy, nn = nextH - dy;
+                if (np > 50 && nn > 50) {
+                    prev.style.flexBasis = `${np}px`;
+                    next.style.flexBasis = `${nn}px`;
+                }
+            };
+            const onUp = () => {
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+                splitter.classList.remove('active');
+                document.body.style.cursor = 'default';
+                if (sensorChart) sensorChart.resize();
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    });
 }
 
 function setupResizeObserver() {
-    const container = document.getElementById('spectrogram-container');
-    const resizeObserver = new ResizeObserver(entries => {
-        if (globalAudioBuffer) {
-            // Debounce or just request frame
-            requestAnimationFrame(() => drawSpectrogram(globalAudioBuffer));
-        }
+    const obs = new ResizeObserver(() => {
+        if (globalAudioBuffer) requestAnimationFrame(() => drawSpectrogram(globalAudioBuffer));
     });
-    resizeObserver.observe(container);
+    obs.observe(document.getElementById('spectrogram-container'));
 }
 
-// Playback Logic
-const videoPlayer = document.getElementById('videoPlayer');
-const btnPlay = document.getElementById('btnPlay');
-const selSpeed = document.getElementById('selSpeed');
-const rngOffset = document.getElementById('rngOffset');
-const lblOffset = document.getElementById('lblOffset');
-const btnToggleSpec = document.getElementById('btnToggleSpec');
+// ── Playback controls ─────────────────────────────────────────────────────────
+btnPlay.addEventListener('click', togglePlay);
 
-let isPlaying = false;
-let syncOffsetMs = 30000;
-let showSpectrogram = true;
-
-btnPlay.addEventListener('click', () => {
+function togglePlay() {
     if (videoPlayer.paused) {
         videoPlayer.play();
-        btnPlay.textContent = "⏸ PAUSE";
+        btnPlay.textContent = '⏸ PAUSE';
     } else {
         videoPlayer.pause();
-        btnPlay.textContent = "▶ PLAY";
+        btnPlay.textContent = '▶ PLAY';
     }
-});
+}
 
 selSpeed.addEventListener('change', () => {
     videoPlayer.playbackRate = parseFloat(selSpeed.value);
@@ -338,64 +402,160 @@ selSpeed.addEventListener('change', () => {
 
 rngOffset.addEventListener('input', () => {
     syncOffsetMs = parseInt(rngOffset.value);
-    const offsetDisplay = syncOffsetMs - 30000;
-    lblOffset.textContent = `${offsetDisplay > 0 ? '+' : ''}${offsetDisplay} ms`;
+    updateOffsetLabel();
     updateCursor(videoPlayer.currentTime * 1000);
 });
 
-videoPlayer.addEventListener('timeupdate', () => {
-    const t_ms = videoPlayer.currentTime * 1000;
-    updateCursor(t_ms);
+btnOffsetMinus.addEventListener('click', () => {
+    const v = Math.max(0, parseInt(rngOffset.value) - 1);
+    rngOffset.value = v;
+    syncOffsetMs = v;
+    updateOffsetLabel();
+    updateCursor(videoPlayer.currentTime * 1000);
 });
 
-if (btnToggleSpec) {
-    btnToggleSpec.addEventListener('click', () => {
-        showSpectrogram = !showSpectrogram;
-        const container = document.getElementById('spectrogram-container');
-        const split1 = document.getElementById('split-1'); // The splitter above it
+btnOffsetPlus.addEventListener('click', () => {
+    const v = Math.min(60000, parseInt(rngOffset.value) + 1);
+    rngOffset.value = v;
+    syncOffsetMs = v;
+    updateOffsetLabel();
+    updateCursor(videoPlayer.currentTime * 1000);
+});
 
-        if (showSpectrogram) {
-            container.style.display = 'flex';
-            split1.style.display = 'block';
-        } else {
-            container.style.display = 'none';
-            split1.style.display = 'none';
-        }
-
-        // Trigger resize for neighbors
-        if (sensorChart) setTimeout(() => sensorChart.resize(), 50);
-    });
+function updateOffsetLabel() {
+    const d = syncOffsetMs - 30000;
+    lblOffset.textContent = `${d > 0 ? '+' : ''}${d} ms`;
 }
 
-// Spectrogram Logic
-let audioCtx = null;
+videoPlayer.addEventListener('timeupdate', () => {
+    updateCursor(videoPlayer.currentTime * 1000);
+});
+
+// ── Toggle spectrogram ────────────────────────────────────────────────────────
+btnToggleSpec.addEventListener('click', () => {
+    showSpectrogram = !showSpectrogram;
+    const cont  = document.getElementById('spectrogram-container');
+    const split = document.getElementById('split-1');
+    cont.style.display  = showSpectrogram ? 'flex'  : 'none';
+    split.style.display = showSpectrogram ? 'block' : 'none';
+    if (sensorChart) setTimeout(() => sensorChart.resize(), 50);
+});
+
+// ── Plot Settings Modal ───────────────────────────────────────────────────────
+const plotSettingsModal = document.getElementById('plotSettingsModal');
+
+btnPlotSettings.addEventListener('click', () => {
+    // Sync modal checkboxes to current state
+    document.getElementById('chkSeries1').checked = showSeries[0];
+    document.getElementById('chkSeries2').checked = showSeries[1];
+    document.getElementById('chkSeries3').checked = showSeries[2];
+    document.getElementById('chkShowLPF').checked  = showLPF;
+    document.getElementById('inpLPFFreq').value    = lpfFreq;
+    plotSettingsModal.style.display = 'flex';
+});
+
+document.getElementById('btnPlotSettingsCancel').addEventListener('click', () => {
+    plotSettingsModal.style.display = 'none';
+});
+
+document.getElementById('btnPlotSettingsApply').addEventListener('click', () => {
+    const newShowSeries = [
+        document.getElementById('chkSeries1').checked,
+        document.getElementById('chkSeries2').checked,
+        document.getElementById('chkSeries3').checked
+    ];
+    const newShowLPF = document.getElementById('chkShowLPF').checked;
+    const newLPFFreq = parseFloat(document.getElementById('inpLPFFreq').value) || 5.0;
+
+    const needsReprocess = newLPFFreq !== lpfFreq;
+
+    showSeries = newShowSeries;
+    showLPF    = newShowLPF;
+    lpfFreq    = newLPFFreq;
+
+    plotSettingsModal.style.display = 'none';
+
+    // Re-render chart if a file is loaded
+    if (columnConfig && currentIdx >= 0) {
+        if (needsReprocess) {
+            // Re-read and reprocess CSV
+            filePairs[currentIdx].csv.getFile().then(f => f.text()).then(text => processCSV(text));
+        } else {
+            rebuildChart();
+        }
+    }
+});
+
+// Cached processed data for rebuildChart (no LPF change needed)
+let _cachedLabels   = null;
+let _cachedRawNorm  = []; // per series
+let _cachedLPFNorm  = []; // per series
+
+function rebuildChart() {
+    if (!_cachedLabels || !columnConfig) return;
+
+    const colors = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03', '#d500f9'];
+    const datasets = [];
+
+    columnConfig.series.forEach((series, idx) => {
+        if (!showSeries[idx]) return;
+        const color     = colors[idx % colors.length];
+        const labelBase = series.label || `Series ${idx + 1}`;
+        const rawNorm   = _cachedRawNorm[idx];
+        const lpfNorm   = _cachedLPFNorm[idx];
+
+        if (rawNorm) {
+            datasets.push({
+                label: `${labelBase} (Raw)`,
+                data: rawNorm,
+                borderColor: color,
+                borderWidth: 1.5,
+                pointRadius: 0,
+                fill: false,
+                tension: 0.1,
+                order: 2
+            });
+        }
+
+        if (showLPF && lpfNorm) {
+            datasets.push({
+                label: `${labelBase} (${lpfFreq}Hz LPF)`,
+                data: lpfNorm,
+                borderColor: color + '99',
+                borderWidth: 1,
+                pointRadius: 0,
+                fill: false,
+                tension: 0.1,
+                order: 1
+            });
+        }
+    });
+
+    if (sensorChart) sensorChart.destroy();
+    sensorChart = buildChart(_cachedLabels, datasets);
+}
+
+// ── Spectrogram ───────────────────────────────────────────────────────────────
+let audioCtx  = null;
 let specBuffer = null;
 const specCanvas = document.getElementById('spectrogramCanvas');
-const specCtx = specCanvas.getContext('2d', { willReadFrequently: true });
+const specCtx    = specCanvas.getContext('2d', { willReadFrequently: true });
 
 async function setupSpectrogram(file) {
     try {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const arrayBuffer = await file.arrayBuffer();
-        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-
+        const ab          = await file.arrayBuffer();
+        const audioBuffer = await audioCtx.decodeAudioData(ab);
         globalAudioBuffer = audioBuffer;
-
-        // Draw Spectrogram
         drawSpectrogram(audioBuffer);
     } catch (e) {
-        console.error("Audio processing failed", e);
+        console.error('Audio processing failed', e);
         globalAudioBuffer = null;
     }
 }
 
-// Simple FFT Implementation (Radix-2)
 function fft(real, imag) {
     const n = real.length;
-    if (n === 0) return;
-    if ((n & (n - 1)) !== 0) throw new Error("FFT length must be power of 2");
-
-    // Bit-reversal
     let j = 0;
     for (let i = 0; i < n; i++) {
         if (i < j) {
@@ -403,321 +563,210 @@ function fft(real, imag) {
             [imag[i], imag[j]] = [imag[j], imag[i]];
         }
         let m = n >> 1;
-        while (m >= 1 && j >= m) {
-            j -= m;
-            m >>= 1;
-        }
+        while (m >= 1 && j >= m) { j -= m; m >>= 1; }
         j += m;
     }
-
-    // Butterfly
     for (let step = 1; step < n; step <<= 1) {
         const jump = step << 1;
-        const deltaAngle = -Math.PI / step;
-        const sinDelta = Math.sin(deltaAngle);
-        const cosDelta = Math.cos(deltaAngle);
-
-        let sinAlpha = 0;
-        let cosAlpha = 1; // cos(0)
-
+        const da   = -Math.PI / step;
+        const sinD = Math.sin(da), cosD = Math.cos(da);
+        let sinA = 0, cosA = 1;
         for (let grp = 0; grp < step; grp++) {
             for (let i = grp; i < n; i += jump) {
                 const k = i + step;
-                const tReal = cosAlpha * real[k] - sinAlpha * imag[k];
-                const tImag = cosAlpha * imag[k] + sinAlpha * real[k];
-                real[k] = real[i] - tReal;
-                imag[k] = imag[i] - tImag;
-                real[i] += tReal;
-                imag[i] += tImag;
+                const tr = cosA * real[k] - sinA * imag[k];
+                const ti = cosA * imag[k] + sinA * real[k];
+                real[k] = real[i] - tr; imag[k] = imag[i] - ti;
+                real[i] += tr;          imag[i] += ti;
             }
-            // Update angles
-            const tempCos = cosAlpha * cosDelta - sinAlpha * sinDelta;
-            sinAlpha = cosAlpha * sinDelta + sinAlpha * cosDelta;
-            cosAlpha = tempCos;
+            const tc = cosA * cosD - sinA * sinD;
+            sinA = cosA * sinD + sinA * cosD;
+            cosA = tc;
         }
     }
 }
 
 function drawSpectrogram(buffer) {
     if (!buffer) return;
+    const W = specCanvas.clientWidth || 800;
+    const H = specCanvas.clientHeight || 150;
+    specCanvas.width  = W;
+    specCanvas.height = H;
 
-    // Set canvas internal size to match display size for sharpness
-    const displayWidth = specCanvas.clientWidth || 800;
-    const displayHeight = specCanvas.clientHeight || 150;
+    const data       = buffer.getChannelData(0);
+    const fftSize    = 512;
+    const sampleRate = buffer.sampleRate;
+    const maxFreq    = 10000;
+    const maxBin     = Math.floor(maxFreq / (sampleRate / fftSize));
+    const binsToDraw = Math.min(maxBin, fftSize / 2);
 
-    specCanvas.width = displayWidth;
-    specCanvas.height = displayHeight;
-
-    const data = buffer.getChannelData(0);
-    const canvasWidth = specCanvas.width;
-    const canvasHeight = specCanvas.height;
-
-    // Parameters
-    const fftSize = 512; // Frequency resolution (256 bins)
-
-    // Limits
-    const sampleRate = buffer.sampleRate; // e.g., 44100 or 48000
-    const nyquist = sampleRate / 2;
-    const maxFreq = 10000; // Cap at 10kHz
-
-    // Calculate how many bins cover 0 to maxFreq
-    // Bin resolution = sampleRate / fftSize
-    // Index = freq / (sampleRate / fftSize)
-    const binResolution = sampleRate / fftSize;
-    const maxBinIndex = Math.floor(maxFreq / binResolution);
-
-    // Total bins to check (limit by maxFreq or Nyquist)
-    const totalBins = fftSize / 2;
-    const binsToDraw = Math.min(maxBinIndex, totalBins);
-
-    // Draw background
     specCtx.fillStyle = 'black';
-    specCtx.fillRect(0, 0, canvasWidth, canvasHeight);
+    specCtx.fillRect(0, 0, W, H);
 
-    // Helper arrays for FFT
-    const real = new Float32Array(fftSize);
-    const imag = new Float32Array(fftSize);
-    const windowFunc = new Float32Array(fftSize);
-    for(let i=0; i<fftSize; i++) windowFunc[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1))); // Hanning
+    const real     = new Float32Array(fftSize);
+    const imag     = new Float32Array(fftSize);
+    const win      = new Float32Array(fftSize);
+    for (let i = 0; i < fftSize; i++) win[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1)));
 
-    // Optimization: Create ImageData and manipulate pixels directly
-    const imgData = specCtx.createImageData(canvasWidth, canvasHeight);
-    const pixels = imgData.data;
+    const imgData = specCtx.createImageData(W, H);
+    const pixels  = imgData.data;
 
-    for (let x = 0; x < canvasWidth; x++) {
-        // Calculate the center sample index for this pixel column
-        const offset = Math.floor(x * (data.length - fftSize) / canvasWidth);
+    for (let x = 0; x < W; x++) {
+        const offset = Math.floor(x * (data.length - fftSize) / W);
         if (offset < 0) continue;
-
-        // Prepare Window
         for (let i = 0; i < fftSize; i++) {
-            // Guard against out of bounds
-            const val = (offset + i < data.length) ? data[offset + i] : 0;
-            real[i] = val * windowFunc[i];
+            real[i] = (offset + i < data.length ? data[offset + i] : 0) * win[i];
             imag[i] = 0;
         }
-
-        // Compute FFT
         fft(real, imag);
 
-        // Compute Magnitude & Draw
-
-        for (let y = 0; y < canvasHeight; y++) {
-            // Map y (0 is top = maxFreq) to frequency bin (0 is DC)
-            // Normal mapping: y=0 -> Nyquist
-            // New mapping: y=0 -> maxFreq (10kHz)
-
-            // Invert y: y=0 is top, y=height is bottom (0Hz)
-            const normalizedY = 1 - (y / canvasHeight); // 0 to 1 (0Hz to MaxFreq)
-            const binIdx = Math.floor(normalizedY * binsToDraw);
-
-            if (binIdx < 0 || binIdx >= binsToDraw) continue;
-
-            const mag = Math.sqrt(real[binIdx]**2 + imag[binIdx]**2);
-            // Log scale for magnitude
-            const db = 20 * Math.log10(mag + 1e-6);
-
-            // Normalize for visualization: -80dB to 0dB roughly
-            // Adjust contrast here
-            let val = (db + 80) / 80;
-            if (val < 0) val = 0;
-            if (val > 1) val = 1;
-
-            // Color Mapping: Black -> Blue -> Red -> Yellow -> White
-            let r=0, g=0, b=0;
-            if (val < 0.25) {
-                const t = val / 0.25;
-                r=0; g=0; b=Math.floor(255*t);
-            } else if (val < 0.5) {
-                const t = (val-0.25)/0.25;
-                r=Math.floor(255*t); g=0; b=Math.floor(255*(1-t));
-            } else if (val < 0.75) {
-                const t = (val-0.5)/0.25;
-                r=255; g=Math.floor(255*t); b=0;
-            } else {
-                const t = (val-0.75)/0.25;
-                r=255; g=255; b=Math.floor(255*t);
-            }
-
-            const pixIdx = (y * canvasWidth + x) * 4;
-            pixels[pixIdx] = r;
-            pixels[pixIdx+1] = g;
-            pixels[pixIdx+2] = b;
-            pixels[pixIdx+3] = 255; // Alpha
+        for (let y = 0; y < H; y++) {
+            const binIdx = Math.floor((1 - y / H) * binsToDraw);
+            const mag    = Math.sqrt(real[binIdx] ** 2 + imag[binIdx] ** 2);
+            const db     = 20 * Math.log10(mag + 1e-10);
+            const norm   = Math.max(0, Math.min(1, (db + 80) / 80));
+            const pi     = (y * W + x) * 4;
+            // Inferno-like palette
+            pixels[pi]     = Math.floor(norm < 0.5 ? norm * 2 * 150   : 150 + (norm - 0.5) * 2 * 105);
+            pixels[pi + 1] = Math.floor(norm < 0.5 ? norm * 2 * 30    : 30  + (norm - 0.5) * 2 * 195);
+            pixels[pi + 2] = Math.floor(norm < 0.5 ? 50 + norm * 2 * 80 : 130 - (norm - 0.5) * 2 * 130);
+            pixels[pi + 3] = 255;
         }
     }
 
     specCtx.putImageData(imgData, 0, 0);
-    specBuffer = specCtx.getImageData(0, 0, canvasWidth, canvasHeight);
+    specBuffer = specCtx.getImageData(0, 0, W, H);
 }
 
+function drawSpectrogramCursor(t_ms) {
+    if (!specBuffer) return;
+    specCtx.putImageData(specBuffer, 0, 0);
+    const dur = videoPlayer.duration * 1000;
+    if (dur > 0) {
+        const x = (t_ms / dur) * specCanvas.width;
+        specCtx.beginPath();
+        specCtx.strokeStyle = 'white';
+        specCtx.lineWidth   = 2;
+        specCtx.moveTo(x, 0);
+        specCtx.lineTo(x, specCanvas.height);
+        specCtx.stroke();
+    }
+}
 
-// Sensor Plotting Logic
-let sensorChart = null;
-const sensorCanvas = document.getElementById('sensorCanvas');
-
-// --- SIGNAL PROCESSING HELPERS ---
-
-function calculateMagnitude(xArr, yArr, zArr) {
-    return xArr.map((v, i) => Math.sqrt(v**2 + yArr[i]**2 + zArr[i]**2));
+// ── DSP helpers ───────────────────────────────────────────────────────────────
+function calculateMagnitude(x, y, z) {
+    return x.map((v, i) => Math.sqrt(v * v + y[i] * y[i] + z[i] * z[i]));
 }
 
 function normalizeData(arr) {
-    let min = Infinity;
-    let max = -Infinity;
-    for (let v of arr) {
-        if (v < min) min = v;
-        if (v > max) max = v;
-    }
-    const range = max - min;
-    if (range === 0) return arr.map(() => 0.5);
-    return arr.map(v => (v - min) / range);
+    const mn = Math.min(...arr), mx = Math.max(...arr);
+    if (mx === mn) return arr.map(() => 0);
+    return arr.map(v => (v - mn) / (mx - mn));
 }
 
 function lowPassFilter(data, fs, cutoff) {
-    if (cutoff >= fs / 2) return data;
-
-    const omega0 = 2 * Math.PI * cutoff / fs;
-    const sinOmega0 = Math.sin(omega0);
-    const cosOmega0 = Math.cos(omega0);
-    const Q = 0.7071;
-    const alpha_bi = sinOmega0 / (2 * Q);
-
-    const b0 = (1 - cosOmega0) / 2;
-    const b1 = 1 - cosOmega0;
-    const b2 = (1 - cosOmega0) / 2;
-    const a0 = 1 + alpha_bi;
-    const a1 = -2 * cosOmega0;
-    const a2 = 1 - alpha_bi;
-
-    const b0n = b0 / a0;
-    const b1n = b1 / a0;
-    const b2n = b2 / a0;
-    const a1n = a1 / a0;
-    const a2n = a2 / a0;
-
+    const omega0  = 2 * Math.PI * cutoff / fs;
+    const sinO    = Math.sin(omega0), cosO = Math.cos(omega0);
+    const alpha   = sinO / (2 * 0.7071);
+    const b0 = (1 - cosO) / 2, b1 = 1 - cosO, b2 = (1 - cosO) / 2;
+    const a0 = 1 + alpha,  a1 = -2 * cosO, a2 = 1 - alpha;
+    const B0 = b0/a0, B1 = b1/a0, B2 = b2/a0, A1 = a1/a0, A2 = a2/a0;
     const y = new Array(data.length).fill(0);
-
     for (let i = 0; i < data.length; i++) {
-        const x_0 = data[i];
-        const x_1 = i > 0 ? data[i-1] : 0;
-        const x_2 = i > 1 ? data[i-2] : 0;
-        const y_1 = i > 0 ? y[i-1] : 0;
-        const y_2 = i > 1 ? y[i-2] : 0;
-
-        y[i] = b0n * x_0 + b1n * x_1 + b2n * x_2 - a1n * y_1 - a2n * y_2;
+        y[i] = B0 * data[i]
+             + B1 * (i > 0 ? data[i-1] : 0)
+             + B2 * (i > 1 ? data[i-2] : 0)
+             - A1 * (i > 0 ? y[i-1]    : 0)
+             - A2 * (i > 1 ? y[i-2]    : 0);
     }
-
     return y;
 }
 
+// ── CSV processing ────────────────────────────────────────────────────────────
 function processCSV(text) {
-    if (!columnConfig) {
-        console.error("No column configuration found.");
-        return;
-    }
+    if (!columnConfig) { console.error('No column config'); return; }
 
     const results = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
-    const data = results.data;
+    const data    = results.data;
+    if (!data || data.length < 2) { console.error('Invalid CSV'); return; }
 
-    if (!data || data.length < 2) {
-        console.error("Invalid or empty CSV");
-        return;
-    }
-
-    // --- TIME PROCESSING ---
-    const timeCol = columnConfig.timeCol;
+    const timeCol  = columnConfig.timeCol;
     const timestamps = data.map(r => r[timeCol]);
-
-    // Check if time column exists and has data
-    if (timestamps.some(t => t === undefined || t === null)) {
-         console.error("Time column missing or invalid");
-         alert("Selected Time column not found in this file.");
-         return;
+    if (timestamps.some(t => t == null)) {
+        alert(`Time column "${timeCol}" not found in this file.`); return;
     }
 
-    const t0 = timestamps[0];
-    const t1 = timestamps[timestamps.length - 1];
-    let duration = t1 - t0;
+    const t0     = timestamps[0];
+    const labels = timestamps.map(t => t - t0);
+    const dur    = timestamps[timestamps.length - 1] - t0 || 1;
+    const fs     = data.length / dur;
 
-    // Safety check for duration
-    if (duration <= 0) duration = 1;
+    // Process and cache each series
+    _cachedLabels  = labels;
+    _cachedRawNorm = [];
+    _cachedLPFNorm = [];
 
-    const startT = t0;
-    const labels = timestamps.map(t => (t - startT));
-
-    const count = timestamps.length;
-    let avgDiff = duration / count;
-    if (avgDiff === 0 || isNaN(avgDiff)) avgDiff = 0.01;
-    const fs = 1.0 / avgDiff;
-    console.log(`Detected fs: ${fs.toFixed(2)} Hz`);
-
-    // --- DATA PROCESSING ---
+    const colors   = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03', '#d500f9'];
     const datasets = [];
-    const colors = ['#00bcd4', '#ff4081', '#ffb74d', '#76ff03', '#d500f9']; // Cyan, Pink, Orange, Green, Purple
 
     columnConfig.series.forEach((series, idx) => {
-        const color = colors[idx % colors.length];
-        let rawData = [];
-        let labelBase = series.label || `Series ${idx+1}`;
-
+        let rawData;
         if (series.type === 'raw') {
-            // Raw Column Mode
             rawData = data.map(r => r[series.col] || 0);
         } else {
-            // Magnitude Mode
-            const x = data.map(r => r[series.x] || 0);
-            const y = data.map(r => r[series.y] || 0);
-            const z = data.map(r => r[series.z] || 0);
-            rawData = calculateMagnitude(x, y, z);
+            rawData = calculateMagnitude(
+                data.map(r => r[series.x] || 0),
+                data.map(r => r[series.y] || 0),
+                data.map(r => r[series.z] || 0)
+            );
         }
 
-        // Processing Chain
-        // 1. Normalize Raw (0-1) for visualization
         const normRaw = normalizeData(rawData);
-
-        // 2. LPF (5Hz)
-        const cutoff = 5; // Fixed 5Hz as per requirements
-        const lpfData = lowPassFilter(rawData, fs, cutoff);
-
-        // 3. Normalize LPF (0-1)
+        const lpfData = lowPassFilter(rawData, fs, lpfFreq);
         const normLPF = normalizeData(lpfData);
 
-        // Add Datasets
-        // Raw (Dashed)
+        _cachedRawNorm[idx] = normRaw;
+        _cachedLPFNorm[idx] = normLPF;
+
+        if (!showSeries[idx]) return;
+
+        const color     = colors[idx % colors.length];
+        const labelBase = series.label || `Series ${idx + 1}`;
+
         datasets.push({
             label: `${labelBase} (Raw)`,
             data: normRaw,
             borderColor: color,
-            borderWidth: 1,
+            borderWidth: 1.5,
             pointRadius: 0,
             fill: false,
             tension: 0.1,
-            borderDash: [3, 3],
             order: 2
         });
 
-        // LPF (Solid)
-        datasets.push({
-            label: `${labelBase} (5Hz LPF)`,
-            data: normLPF,
-            borderColor: color,
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.1,
-            order: 1
-        });
+        if (showLPF) {
+            datasets.push({
+                label: `${labelBase} (${lpfFreq}Hz LPF)`,
+                data: normLPF,
+                borderColor: color + '99',
+                borderWidth: 1,
+                pointRadius: 0,
+                fill: false,
+                tension: 0.1,
+                order: 1
+            });
+        }
     });
 
     if (sensorChart) sensorChart.destroy();
+    sensorChart = buildChart(labels, datasets);
+}
 
-    sensorChart = new Chart(sensorCanvas, {
+function buildChart(labels, datasets) {
+    const canvas = document.getElementById('sensorCanvas');
+    return new Chart(canvas, {
         type: 'line',
-        data: {
-            labels: labels,
-            datasets: datasets
-        },
+        data: { labels, datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
@@ -728,361 +777,129 @@ function processCSV(text) {
                     type: 'linear',
                     display: true,
                     title: { display: true, text: 'Time (s)', color: '#888' },
-                    grid: { color: '#333' },
+                    grid:  { color: '#333' },
                     ticks: { color: '#888' }
                 },
                 y: {
-                    grid: { color: '#333' },
-                    title: { display: true, text: 'Normalized Mag', color: '#888' },
+                    grid:  { color: '#333' },
+                    title: { display: true, text: 'Normalized', color: '#888' },
                     ticks: { color: '#888' },
-                    min: 0,
-                    max: 1.1
+                    min: 0, max: 1.1
                 }
             },
             plugins: {
-                legend: { labels: { color: 'white' } },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false
-                }
+                legend:  { labels: { color: 'white' } },
+                tooltip: { mode: 'index', intersect: false }
             }
         },
         plugins: [playheadPlugin]
     });
 }
 
+// ── Cursor update ─────────────────────────────────────────────────────────────
 function updateCursor(t_ms) {
     drawSpectrogramCursor(t_ms);
-    // Trigger Chart Playhead Update
-    if (sensorChart) {
-        sensorChart.update('none'); // Efficient update without full animation
-    }
+    if (sensorChart) sensorChart.update('none');
 }
 
-function drawSpectrogramCursor(t_ms) {
-    if (!specBuffer) return;
-    specCtx.putImageData(specBuffer, 0, 0);
+// ── Markers ───────────────────────────────────────────────────────────────────
+let marks = { stride_start: null, obs_start: null, obs_stop: null, stride_stop: null };
 
-    const duration = videoPlayer.duration * 1000;
-    if (duration > 0) {
-        const x = (t_ms / duration) * specCanvas.width;
-        specCtx.beginPath();
-        specCtx.strokeStyle = 'white';
-        specCtx.lineWidth = 2;
-        specCtx.moveTo(x, 0);
-        specCtx.lineTo(x, specCanvas.height);
-        specCtx.stroke();
-    }
-}
-
-// Marker Logic
-let marks = {
-    stride_start: null, obs_start: null, obs_stop: null, stride_stop: null
-};
-
-document.querySelectorAll('.marker-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        const id = e.target.id;
-        const key = id.replace('btn', '').replace(/([A-Z])/g, '_$1').toLowerCase().substring(1);
-        addMark(key);
-    });
-});
-
+document.getElementById('btnStrideStart').addEventListener('click', () => addMark('stride_start'));
+document.getElementById('btnObsStart').addEventListener('click',   () => addMark('obs_start'));
+document.getElementById('btnObsStop').addEventListener('click',    () => addMark('obs_stop'));
+document.getElementById('btnStrideStop').addEventListener('click', () => addMark('stride_stop'));
 document.getElementById('btnClear').addEventListener('click', clearMarks);
 document.getElementById('btnSave').addEventListener('click', saveData);
 
 function addMark(key) {
-    if (!videoPlayer) return;
-    const t_ms = videoPlayer.currentTime * 1000;
-    marks[key] = Math.round(t_ms);
-    console.log(`Marked ${key} at ${t_ms}ms`);
+    if (!videoPlayer.src) return;
+    marks[key] = Math.round(videoPlayer.currentTime * 1000);
     if (sensorChart) sensorChart.update('none');
 }
 
 function clearMarks() {
     marks = { stride_start: null, obs_start: null, obs_stop: null, stride_stop: null };
-    console.log("Marks cleared");
+    document.getElementById('chkAbnormal').checked = false;
     if (sensorChart) sensorChart.update('none');
 }
 
+// ── Save ──────────────────────────────────────────────────────────────────────
 async function saveData() {
-    if (currentIdx === -1) {
-        alert("No file loaded.");
-        return;
-    }
+    if (currentIdx === -1) { alert('No file loaded.'); return; }
 
-    const pair = filePairs[currentIdx];
+    const pair    = filePairs[currentIdx];
     const rowData = {
-        Timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-        Directory: pair.dirName,
-        Offset_ms: syncOffsetMs - 30000,
-        ...marks,
-        Abnormal: document.getElementById('chkAbnormal').checked
+        Timestamp:     new Date().toISOString().replace('T', ' ').substring(0, 19),
+        Computer_Name: navigator.userAgent.match(/\(([^)]+)\)/)?.[1]?.split(';')[0]?.trim() || 'Web',
+        Directory:     pair.dirName,
+        Video_File:    pair.videoName || '',
+        CSV_File:      '',          // not tracked in web (file handle only)
+        Offset_ms:     syncOffsetMs - 30000,
+        Start_ms:      marks.stride_start ?? '',
+        Stop_ms:       marks.stride_stop  ?? '',
+        Incomplete:    '',
+        Missed_Contact:'',
+        Duration_s:    (marks.stride_start != null && marks.stride_stop != null)
+                         ? ((marks.stride_stop - marks.stride_start) / 1000).toFixed(3)
+                         : '',
+        Notes:         '',
+        stride_start:  marks.stride_start ?? '',
+        obs_start:     marks.obs_start    ?? '',
+        obs_stop:      marks.obs_stop     ?? '',
+        stride_stop:   marks.stride_stop  ?? '',
+        Abnormal:      document.getElementById('chkAbnormal').checked
     };
 
-    const values = Object.values(rowData).map(v => v === null ? '' : v);
-    const line = values.join(',') + '\n';
+    const values = Object.values(rowData).map(v => v === null || v === undefined ? '' : v);
+    const line   = values.join(',') + '\n';
 
     if (syncLogHandle) {
         try {
             const writable = await syncLogHandle.createWritable({ keepExistingData: true });
-            const file = await syncLogHandle.getFile();
-            const size = file.size;
-            await writable.write({ type: 'write', position: size, data: line });
+            const file     = await syncLogHandle.getFile();
+            await writable.write({ type: 'write', position: file.size, data: line });
             await writable.close();
-            alert("Saved!");
-            btnNextFile.click();
+            isSaved = true;
+            alert('Saved!');
+            // Auto-advance to next file
+            if (currentIdx < filePairs.length - 1) {
+                currentIdx++;
+                isSaved = true;
+                loadFile(currentIdx);
+            }
         } catch (e) {
-            console.error("Save failed", e);
-            alert("Save failed: " + e.message);
+            console.error('Save failed', e);
+            alert('Save failed: ' + e.message);
         }
     } else {
+        // Fallback – download individual entry
         const blob = new Blob([line], { type: 'text/csv' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `sync_log_entry_${pair.dirName}.csv`;
+        const url  = URL.createObjectURL(blob);
+        const a    = Object.assign(document.createElement('a'), { href: url, download: `sync_log_entry_${pair.dirName}.csv` });
         a.click();
         URL.revokeObjectURL(url);
-        alert("Log entry downloaded (Fallback Mode).");
-        btnNextFile.click();
-    }
-}
-
-// --- COLUMN SELECTION MODAL LOGIC ---
-
-const modal = document.getElementById('columnSelectModal');
-const selTimeCol = document.getElementById('selTimeCol');
-const dataSelectionContainer = document.getElementById('dataSelectionContainer');
-const btnConfirmSelection = document.getElementById('btnConfirmSelection');
-const radioModes = document.getElementsByName('dataMode');
-
-if (btnConfirmSelection) {
-    btnConfirmSelection.addEventListener('click', onConfirmSelection);
-}
-
-if (radioModes) {
-    radioModes.forEach(r => {
-        r.addEventListener('change', () => {
-            if (modal._availableHeaders) {
-                updateDataSelectionUI(modal._availableHeaders);
-            }
-        });
-    });
-}
-
-function showColumnSelectionModal(csvText) {
-    // Parse just the beginning to get headers and preview
-    const results = Papa.parse(csvText, {
-        header: true,
-        preview: 5,
-        dynamicTyping: true,
-        skipEmptyLines: true
-    });
-
-    if (results.meta && results.meta.fields) {
-        const headers = results.meta.fields;
-        modal._availableHeaders = headers;
-
-        // 1. Populate Preview Table
-        const table = document.getElementById('csvPreviewTable');
-        table.innerHTML = '';
-
-        // Header Row
-        const thead = document.createElement('tr');
-        headers.forEach(h => {
-            const th = document.createElement('th');
-            th.textContent = h;
-            thead.appendChild(th);
-        });
-        table.appendChild(thead);
-
-        // Data Rows
-        results.data.forEach(row => {
-            const tr = document.createElement('tr');
-            headers.forEach(h => {
-                const td = document.createElement('td');
-                const val = row[h] !== undefined ? row[h] : '';
-                td.textContent = val;
-                tr.appendChild(td);
-            });
-            table.appendChild(tr);
-        });
-
-        // 2. Populate Time Column Select
-        selTimeCol.innerHTML = '';
-        let timeFound = false;
-        headers.forEach(h => {
-            const opt = document.createElement('option');
-            opt.value = h;
-            opt.textContent = h;
-            if (!timeFound && (h.toLowerCase().includes('time') || h.toLowerCase() === 'ts' || h.toLowerCase() === 'timestamp')) {
-                opt.selected = true;
-                timeFound = true;
-            }
-            selTimeCol.appendChild(opt);
-        });
-
-        // 3. Initialize Data Selection UI
-        updateDataSelectionUI(headers);
-
-        // Show Modal
-        modal.style.display = 'flex';
-    } else {
-        console.error("CSV Parse Error", results.errors);
-        alert("Could not parse CSV headers. Proceeding with default assumptions.");
-        loadFile(0);
-    }
-}
-
-function updateDataSelectionUI(headers) {
-    dataSelectionContainer.innerHTML = '';
-    const mode = document.querySelector('input[name="dataMode"]:checked').value;
-
-    if (mode === 'raw') {
-        // Raw Mode: 3 individual columns
-        for (let i = 1; i <= 3; i++) {
-            const group = document.createElement('div');
-            group.className = 'data-group';
-            const h4 = document.createElement('h4');
-            h4.textContent = `Series ${i}`;
-            group.appendChild(h4);
-
-            const row = document.createElement('div');
-            row.className = 'field-row';
-
-            const sel = document.createElement('select');
-            sel.className = 'col-select';
-
-            const optNone = document.createElement('option');
-            optNone.value = '';
-            optNone.textContent = '-- None --';
-            sel.appendChild(optNone);
-
-            headers.forEach(h => {
-                const opt = document.createElement('option');
-                opt.value = h;
-                opt.textContent = h;
-                sel.appendChild(opt);
-            });
-
-            row.appendChild(sel);
-            group.appendChild(row);
-            dataSelectionContainer.appendChild(group);
-        }
-    } else {
-        // Magnitude Mode: 3 groups of X,Y,Z
-        for (let i = 1; i <= 3; i++) {
-            const group = document.createElement('div');
-            group.className = 'data-group';
-            const h4 = document.createElement('h4');
-            h4.textContent = `Series ${i} (Vector)`;
-            group.appendChild(h4);
-
-            ['X', 'Y', 'Z'].forEach(axis => {
-                const row = document.createElement('div');
-                row.className = 'field-row';
-
-                const lbl = document.createElement('label');
-                lbl.textContent = axis;
-
-                const sel = document.createElement('select');
-                sel.className = 'col-select';
-                sel.dataset.axis = axis;
-
-                const optNone = document.createElement('option');
-                optNone.value = '';
-                optNone.textContent = '-- None --';
-                sel.appendChild(optNone);
-
-                // Smart Default Selection
-                let hint = '';
-                if (i === 1) hint = 'A'; // Accel
-                else if (i === 2) hint = 'G'; // Gyro
-                else if (i === 3) hint = 'M'; // Mag
-
-                const targetStart = hint + axis.toLowerCase();
-
-                headers.forEach(h => {
-                    const opt = document.createElement('option');
-                    opt.value = h;
-                    opt.textContent = h;
-                    // Try to match Ax, Ay, Az, etc.
-                    if (hint && h.startsWith(targetStart)) {
-                         opt.selected = true;
-                    }
-                    sel.appendChild(opt);
-                });
-
-                row.appendChild(lbl);
-                row.appendChild(sel);
-                group.appendChild(row);
-            });
-
-            dataSelectionContainer.appendChild(group);
+        isSaved = true;
+        alert('Log entry downloaded (Fallback Mode).');
+        if (currentIdx < filePairs.length - 1) {
+            currentIdx++;
+            isSaved = true;
+            loadFile(currentIdx);
         }
     }
 }
 
-function onConfirmSelection() {
-    const timeCol = selTimeCol.value;
-    const mode = document.querySelector('input[name="dataMode"]:checked').value;
-    const seriesList = [];
+// ── Keyboard shortcuts (Space, S, D, F, G) ────────────────────────────────────
+document.addEventListener('keydown', e => {
+    // Don't fire when user is typing in an input
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-    const groups = dataSelectionContainer.querySelectorAll('.data-group');
-
-    groups.forEach((g, idx) => {
-        const selects = g.querySelectorAll('select');
-
-        if (mode === 'raw') {
-            // Raw Mode: 1 select per group
-            const col = selects[0].value;
-            if (col) {
-                seriesList.push({
-                    type: 'raw',
-                    col: col,
-                    label: `Series ${idx+1} (${col})`
-                });
-            }
-        } else {
-            // Magnitude Mode: 3 selects (X, Y, Z)
-            const x = selects[0].value;
-            const y = selects[1].value;
-            const z = selects[2].value;
-
-            if (x && y && z) {
-                seriesList.push({
-                    type: 'magnitude',
-                    x: x, y: y, z: z,
-                    label: `Series ${idx+1} Mag`
-                });
-            } else if (x || y || z) {
-                // Warn if partial selection?
-                console.warn(`Series ${idx+1} is incomplete`);
-            }
-        }
-    });
-
-    if (!timeCol) {
-        alert("Please select a Time column.");
-        return;
+    switch (e.code) {
+        case 'Space': e.preventDefault(); togglePlay();          break;
+        case 'KeyS':  addMark('stride_start');                   break;
+        case 'KeyD':  addMark('obs_start');                      break;
+        case 'KeyF':  addMark('obs_stop');                       break;
+        case 'KeyG':  addMark('stride_stop');                    break;
     }
-
-    if (seriesList.length === 0) {
-        alert("Please select at least one valid data series.");
-        return;
-    }
-
-    // Save Configuration
-    columnConfig = {
-        timeCol: timeCol,
-        mode: mode,
-        series: seriesList
-    };
-
-    console.log("Column Config Saved:", columnConfig);
-    modal.style.display = 'none';
-
-    // Start loading the first file
-    loadFile(0);
-}
+});
