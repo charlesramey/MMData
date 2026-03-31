@@ -984,7 +984,16 @@ class SyncPlayer(QMainWindow):
                                              "Select Root",
                                              options=QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog)
         if p:
-            self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
+            # Detect whether the selected folder is itself a single repetition directory
+            # (contains a video/CSV pair directly) or a parent directory of multiple reps.
+            v, c = find_video_csv_pair(p)
+            if v and c:
+                # Single repetition mode: the selected folder IS the rep directory
+                self.dirs = [p]
+            else:
+                # Multi-repetition mode: treat selected folder as a parent containing subdirectories
+                self.dirs = [os.path.join(p, d) for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p, d))]
+
             if self.dirs:
                 self.idx = 0
                 self.next_btn.setEnabled(len(self.dirs) > 1)
